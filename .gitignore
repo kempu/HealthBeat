@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# SPM build artifacts
+.build/
+.swiftpm/
+
+# Xcode user data (per-developer, not shared)
+xcuserdata/
+*.xcuserstate
+
+# Xcode derived data (when configured to be local)
+DerivedData/
+
+# Xcode generated files
+*.xccheckout
+*.moved-aside
+
+# Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+# Code signing (keep entitlements, ignore exports)
+*.mobileprovision
+*.p12
+ExportOptions.plist

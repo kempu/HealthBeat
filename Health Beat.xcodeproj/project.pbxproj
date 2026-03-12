@@ -1,0 +1,765 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AABB00000000000000020001 /* HealthBeatApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010001 /* HealthBeatApp.swift */; };
+		AABB00000000000000020002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010002 /* ContentView.swift */; };
+		AABB00000000000000020003 /* MySQLConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010003 /* MySQLConfig.swift */; };
+		AABB00000000000000020004 /* SyncState.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010004 /* SyncState.swift */; };
+		AABB00000000000000020005 /* HealthDataType.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010005 /* HealthDataType.swift */; };
+		AABB00000000000000020006 /* HealthRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010006 /* HealthRecord.swift */; };
+		AABB00000000000000020007 /* MySQLService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010007 /* MySQLService.swift */; };
+		AABB00000000000000020008 /* SchemaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010008 /* SchemaService.swift */; };
+		AABB00000000000000020009 /* HealthKitService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010009 /* HealthKitService.swift */; };
+		AABB0000000000000002000A /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001000A /* SyncService.swift */; };
+		AABB0000000000000002000B /* SyncViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001000B /* SyncViewModel.swift */; };
+		AABB0000000000000002000C /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001000C /* SettingsViewModel.swift */; };
+		AABB0000000000000002000D /* DataBrowserViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001000D /* DataBrowserViewModel.swift */; };
+		AABB0000000000000002000E /* CategoryStatusCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001000E /* CategoryStatusCard.swift */; };
+		AABB0000000000000002000F /* SyncDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001000F /* SyncDashboardView.swift */; };
+		AABB00000000000000020010 /* DataBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010010 /* DataBrowserView.swift */; };
+		AABB00000000000000020011 /* QuantityDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010011 /* QuantityDataView.swift */; };
+		AABB00000000000000020012 /* WorkoutDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010012 /* WorkoutDataView.swift */; };
+		AABB00000000000000020013 /* SleepDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010013 /* SleepDataView.swift */; };
+		AABB00000000000000020014 /* CategoryDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010014 /* CategoryDataView.swift */; };
+		AABB00000000000000020015 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010015 /* SettingsView.swift */; };
+		AABB00000000000000020016 /* MySQLSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010016 /* MySQLSettingsView.swift */; };
+		AABB00000000000000020017 /* HealthPermissionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010017 /* HealthPermissionsView.swift */; };
+		AABB0000000000000002001A /* HealthKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001001A /* HealthKit.framework */; };
+		AABB0000000000000002001B /* BackgroundTasks.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001001B /* BackgroundTasks.framework */; };
+		AABB0000000000000002001C /* ActivityKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001001E /* ActivityKit.framework */; };
+		AABB0000000000000002001D /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001001D /* WidgetKit.framework */; };
+		AABB0000000000000002001E /* ActivityKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001001E /* ActivityKit.framework */; };
+		AABB0000000000000002001F /* Health BeatWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001001F /* Health BeatWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		AABB00000000000000020020 /* HealthBeatWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010020 /* HealthBeatWidgetsBundle.swift */; };
+		AABB00000000000000020021 /* SyncLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010021 /* SyncLiveActivity.swift */; };
+		AABB00000000000000020023 /* SyncActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010023 /* SyncActivityAttributes.swift */; };
+		AABB00000000000000020024 /* SyncActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010024 /* SyncActivityAttributes.swift */; };
+		AABB00000000000000020026 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010025 /* Assets.xcassets */; };
+		AABB00000000000000020027 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010026 /* Assets.xcassets */; };
+		AABB00000000000000020028 /* LocationConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010027 /* LocationConfig.swift */; };
+		AABB00000000000000020029 /* GeoFence.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010028 /* GeoFence.swift */; };
+		AABB0000000000000002002A /* LocationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010029 /* LocationService.swift */; };
+		AABB0000000000000002002B /* LocationViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001002A /* LocationViewModel.swift */; };
+		AABB0000000000000002002C /* LocationSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001002B /* LocationSettingsView.swift */; };
+		AABB0000000000000002002D /* GeoFenceEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001002C /* GeoFenceEditView.swift */; };
+		AABB0000000000000002002E /* CoreLocation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001002D /* CoreLocation.framework */; };
+		AABB0000000000000002002F /* PlaceCategory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001002E /* PlaceCategory.swift */; };
+		AABB00000000000000020030 /* PlaceCategoriesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001002F /* PlaceCategoriesView.swift */; };
+		AABB00000000000000020031 /* BackupManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010030 /* BackupManager.swift */; };
+		AABB00000000000000020032 /* BackupConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010031 /* BackupConfig.swift */; };
+		AABB00000000000000020033 /* BackupSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010032 /* BackupSettingsView.swift */; };
+		AABB00000000000000020034 /* BackupViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010033 /* BackupViewModel.swift */; };
+		AABB00000000000000020035 /* MedicationDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010034 /* MedicationDataView.swift */; };
+		AABB00000000000000020036 /* BackgroundSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010035 /* BackgroundSyncManager.swift */; };
+		AABB00000000000000020037 /* iCloudSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010036 /* iCloudSyncService.swift */; };
+		AABB00000000000000020038 /* iCloudSyncSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010037 /* iCloudSyncSettingsView.swift */; };
+		AABB00000000000000020039 /* LocationTrackDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010038 /* LocationTrackDataView.swift */; };
+		AABB0000000000000002003A /* CheckInDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010039 /* CheckInDataView.swift */; };
+		AABB0000000000000002003B /* DataValidationViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001003A /* DataValidationViewModel.swift */; };
+		AABB0000000000000002003C /* DataValidationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001003B /* DataValidationView.swift */; };
+		AABB0000000000000002003D /* BrandFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001003C /* BrandFooter.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		AABB00000000000000070001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AABB00000000000000060002 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AABB00000000000000060003;
+			remoteInfo = HealthBeatWidgets;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AABB00000000000000040007 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				AABB0000000000000002001F /* Health BeatWidgets.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		AABB00000000000000010001 /* HealthBeatApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthBeatApp.swift; sourceTree = "<group>"; };
+		AABB00000000000000010002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010003 /* MySQLConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MySQLConfig.swift; sourceTree = "<group>"; };
+		AABB00000000000000010004 /* SyncState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncState.swift; sourceTree = "<group>"; };
+		AABB00000000000000010005 /* HealthDataType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthDataType.swift; sourceTree = "<group>"; };
+		AABB00000000000000010006 /* HealthRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthRecord.swift; sourceTree = "<group>"; };
+		AABB00000000000000010007 /* MySQLService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MySQLService.swift; sourceTree = "<group>"; };
+		AABB00000000000000010008 /* SchemaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemaService.swift; sourceTree = "<group>"; };
+		AABB00000000000000010009 /* HealthKitService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthKitService.swift; sourceTree = "<group>"; };
+		AABB0000000000000001000A /* SyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncService.swift; sourceTree = "<group>"; };
+		AABB0000000000000001000B /* SyncViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncViewModel.swift; sourceTree = "<group>"; };
+		AABB0000000000000001000C /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
+		AABB0000000000000001000D /* DataBrowserViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataBrowserViewModel.swift; sourceTree = "<group>"; };
+		AABB0000000000000001000E /* CategoryStatusCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategoryStatusCard.swift; sourceTree = "<group>"; };
+		AABB0000000000000001000F /* SyncDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncDashboardView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010010 /* DataBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataBrowserView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010011 /* QuantityDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuantityDataView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010012 /* WorkoutDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutDataView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010013 /* SleepDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepDataView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010014 /* CategoryDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategoryDataView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010015 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010016 /* MySQLSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MySQLSettingsView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010017 /* HealthPermissionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthPermissionsView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010018 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		AABB00000000000000010019 /* HealthBeat.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HealthBeat.entitlements; sourceTree = "<group>"; };
+		AABB0000000000000001001A /* HealthKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = HealthKit.framework; path = System/Library/Frameworks/HealthKit.framework; sourceTree = SDKROOT; };
+		AABB0000000000000001001B /* BackgroundTasks.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = BackgroundTasks.framework; path = System/Library/Frameworks/BackgroundTasks.framework; sourceTree = SDKROOT; };
+		AABB0000000000000001001C /* Health Beat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Health Beat.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		AABB0000000000000001001D /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		AABB0000000000000001001E /* ActivityKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ActivityKit.framework; path = System/Library/Frameworks/ActivityKit.framework; sourceTree = SDKROOT; };
+		AABB0000000000000001001F /* Health BeatWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "Health BeatWidgets.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		AABB00000000000000010020 /* HealthBeatWidgetsBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthBeatWidgetsBundle.swift; sourceTree = "<group>"; };
+		AABB00000000000000010021 /* SyncLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncLiveActivity.swift; sourceTree = "<group>"; };
+		AABB00000000000000010022 /* WidgetInfo.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = WidgetInfo.plist; sourceTree = "<group>"; };
+		AABB00000000000000010023 /* SyncActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncActivityAttributes.swift; sourceTree = "<group>"; };
+		AABB00000000000000010024 /* SyncActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncActivityAttributes.swift; sourceTree = "<group>"; };
+		AABB00000000000000010025 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AABB00000000000000010026 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AABB00000000000000010027 /* LocationConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationConfig.swift; sourceTree = "<group>"; };
+		AABB00000000000000010028 /* GeoFence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeoFence.swift; sourceTree = "<group>"; };
+		AABB00000000000000010029 /* LocationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationService.swift; sourceTree = "<group>"; };
+		AABB0000000000000001002A /* LocationViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationViewModel.swift; sourceTree = "<group>"; };
+		AABB0000000000000001002B /* LocationSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSettingsView.swift; sourceTree = "<group>"; };
+		AABB0000000000000001002C /* GeoFenceEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeoFenceEditView.swift; sourceTree = "<group>"; };
+		AABB0000000000000001002D /* CoreLocation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreLocation.framework; path = System/Library/Frameworks/CoreLocation.framework; sourceTree = SDKROOT; };
+		AABB0000000000000001002E /* PlaceCategory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceCategory.swift; sourceTree = "<group>"; };
+		AABB0000000000000001002F /* PlaceCategoriesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceCategoriesView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010030 /* BackupManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupManager.swift; sourceTree = "<group>"; };
+		AABB00000000000000010031 /* BackupConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupConfig.swift; sourceTree = "<group>"; };
+		AABB00000000000000010032 /* BackupSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupSettingsView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010033 /* BackupViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupViewModel.swift; sourceTree = "<group>"; };
+		AABB00000000000000010034 /* MedicationDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MedicationDataView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010035 /* BackgroundSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundSyncManager.swift; sourceTree = "<group>"; };
+		AABB00000000000000010036 /* iCloudSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iCloudSyncService.swift; sourceTree = "<group>"; };
+		AABB00000000000000010037 /* iCloudSyncSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iCloudSyncSettingsView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010038 /* LocationTrackDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationTrackDataView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010039 /* CheckInDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CheckInDataView.swift; sourceTree = "<group>"; };
+		AABB0000000000000001003A /* DataValidationViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataValidationViewModel.swift; sourceTree = "<group>"; };
+		AABB0000000000000001003B /* DataValidationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataValidationView.swift; sourceTree = "<group>"; };
+		AABB0000000000000001003C /* BrandFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandFooter.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AABB00000000000000040003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AABB0000000000000002001A /* HealthKit.framework in Frameworks */,
+				AABB0000000000000002001B /* BackgroundTasks.framework in Frameworks */,
+				AABB0000000000000002001C /* ActivityKit.framework in Frameworks */,
+				AABB0000000000000002002E /* CoreLocation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AABB00000000000000040006 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AABB0000000000000002001D /* WidgetKit.framework in Frameworks */,
+				AABB0000000000000002001E /* ActivityKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AABB00000000000000030001 = {
+			isa = PBXGroup;
+			children = (
+				AABB00000000000000030002 /* HealthBeat */,
+				AABB0000000000000003000D /* HealthBeatWidgets */,
+				AABB0000000000000003000B /* Frameworks */,
+				AABB0000000000000003000C /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AABB00000000000000030002 /* HealthBeat */ = {
+			isa = PBXGroup;
+			children = (
+				AABB00000000000000010001 /* HealthBeatApp.swift */,
+				AABB00000000000000010002 /* ContentView.swift */,
+				AABB00000000000000030003 /* Models */,
+				AABB00000000000000030004 /* Services */,
+				AABB00000000000000030005 /* ViewModels */,
+				AABB00000000000000030006 /* Views */,
+				AABB0000000000000003000A /* Resources */,
+			);
+			name = HealthBeat;
+			path = Sources/HealthBeat;
+			sourceTree = "<group>";
+		};
+		AABB00000000000000030003 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				AABB00000000000000010003 /* MySQLConfig.swift */,
+				AABB00000000000000010004 /* SyncState.swift */,
+				AABB00000000000000010005 /* HealthDataType.swift */,
+				AABB00000000000000010006 /* HealthRecord.swift */,
+				AABB00000000000000010024 /* SyncActivityAttributes.swift */,
+				AABB00000000000000010027 /* LocationConfig.swift */,
+				AABB00000000000000010028 /* GeoFence.swift */,
+				AABB0000000000000001002E /* PlaceCategory.swift */,
+				AABB00000000000000010031 /* BackupConfig.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		AABB00000000000000030004 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				AABB00000000000000010007 /* MySQLService.swift */,
+				AABB00000000000000010008 /* SchemaService.swift */,
+				AABB00000000000000010009 /* HealthKitService.swift */,
+				AABB0000000000000001000A /* SyncService.swift */,
+				AABB00000000000000010029 /* LocationService.swift */,
+				AABB00000000000000010030 /* BackupManager.swift */,
+				AABB00000000000000010035 /* BackgroundSyncManager.swift */,
+				AABB00000000000000010036 /* iCloudSyncService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		AABB00000000000000030005 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				AABB0000000000000001000B /* SyncViewModel.swift */,
+				AABB0000000000000001000C /* SettingsViewModel.swift */,
+				AABB0000000000000001000D /* DataBrowserViewModel.swift */,
+				AABB0000000000000001002A /* LocationViewModel.swift */,
+				AABB00000000000000010033 /* BackupViewModel.swift */,
+				AABB0000000000000001003A /* DataValidationViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		AABB00000000000000030006 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				AABB0000000000000001003C /* BrandFooter.swift */,
+				AABB00000000000000030007 /* Sync */,
+				AABB00000000000000030008 /* DataBrowser */,
+				AABB00000000000000030009 /* Settings */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		AABB00000000000000030007 /* Sync */ = {
+			isa = PBXGroup;
+			children = (
+				AABB0000000000000001000E /* CategoryStatusCard.swift */,
+				AABB0000000000000001000F /* SyncDashboardView.swift */,
+			);
+			path = Sync;
+			sourceTree = "<group>";
+		};
+		AABB00000000000000030008 /* DataBrowser */ = {
+			isa = PBXGroup;
+			children = (
+				AABB00000000000000010010 /* DataBrowserView.swift */,
+				AABB00000000000000010011 /* QuantityDataView.swift */,
+				AABB00000000000000010012 /* WorkoutDataView.swift */,
+				AABB00000000000000010013 /* SleepDataView.swift */,
+				AABB00000000000000010014 /* CategoryDataView.swift */,
+				AABB00000000000000010034 /* MedicationDataView.swift */,
+				AABB00000000000000010038 /* LocationTrackDataView.swift */,
+				AABB00000000000000010039 /* CheckInDataView.swift */,
+			);
+			path = DataBrowser;
+			sourceTree = "<group>";
+		};
+		AABB00000000000000030009 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				AABB00000000000000010015 /* SettingsView.swift */,
+				AABB00000000000000010016 /* MySQLSettingsView.swift */,
+				AABB00000000000000010017 /* HealthPermissionsView.swift */,
+				AABB0000000000000001002B /* LocationSettingsView.swift */,
+				AABB0000000000000001002C /* GeoFenceEditView.swift */,
+				AABB0000000000000001002F /* PlaceCategoriesView.swift */,
+				AABB00000000000000010032 /* BackupSettingsView.swift */,
+				AABB00000000000000010037 /* iCloudSyncSettingsView.swift */,
+				AABB0000000000000001003B /* DataValidationView.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		AABB0000000000000003000A /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				AABB00000000000000010018 /* Info.plist */,
+				AABB00000000000000010019 /* HealthBeat.entitlements */,
+				AABB00000000000000010025 /* Assets.xcassets */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		AABB0000000000000003000B /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				AABB0000000000000001001A /* HealthKit.framework */,
+				AABB0000000000000001001B /* BackgroundTasks.framework */,
+				AABB0000000000000001001D /* WidgetKit.framework */,
+				AABB0000000000000001001E /* ActivityKit.framework */,
+				AABB0000000000000001002D /* CoreLocation.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		AABB0000000000000003000C /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AABB0000000000000001001C /* Health Beat.app */,
+				AABB0000000000000001001F /* Health BeatWidgets.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AABB0000000000000003000D /* HealthBeatWidgets */ = {
+			isa = PBXGroup;
+			children = (
+				AABB00000000000000010020 /* HealthBeatWidgetsBundle.swift */,
+				AABB00000000000000010021 /* SyncLiveActivity.swift */,
+				AABB00000000000000010023 /* SyncActivityAttributes.swift */,
+				AABB00000000000000010022 /* WidgetInfo.plist */,
+				AABB00000000000000010026 /* Assets.xcassets */,
+			);
+			name = HealthBeatWidgets;
+			path = Sources/HealthBeatWidgets;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AABB00000000000000060001 /* Health Beat */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AABB00000000000000050002 /* Build configuration list for PBXNativeTarget "Health Beat" */;
+			buildPhases = (
+				AABB00000000000000040001 /* Sources */,
+				AABB00000000000000040002 /* Resources */,
+				AABB00000000000000040003 /* Frameworks */,
+				AABB00000000000000040007 /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AABB00000000000000070002 /* PBXTargetDependency */,
+			);
+			name = "Health Beat";
+			productName = HealthBeat;
+			productReference = AABB0000000000000001001C /* Health Beat.app */;
+			productType = "com.apple.product-type.application";
+		};
+		AABB00000000000000060003 /* Health BeatWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AABB00000000000000050009 /* Build configuration list for PBXNativeTarget "Health BeatWidgets" */;
+			buildPhases = (
+				AABB00000000000000040004 /* Sources */,
+				AABB00000000000000040005 /* Resources */,
+				AABB00000000000000040006 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "Health BeatWidgets";
+			productName = HealthBeatWidgets;
+			productReference = AABB0000000000000001001F /* Health BeatWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AABB00000000000000060002 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 2630;
+				TargetAttributes = {
+					AABB00000000000000060001 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+					AABB00000000000000060003 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = AABB00000000000000050001 /* Build configuration list for PBXProject "Health Beat" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AABB00000000000000030001;
+			productRefGroup = AABB0000000000000003000C /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AABB00000000000000060001 /* Health Beat */,
+				AABB00000000000000060003 /* Health BeatWidgets */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AABB00000000000000040002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AABB00000000000000020026 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AABB00000000000000040005 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AABB00000000000000020027 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AABB00000000000000040001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AABB00000000000000020001 /* HealthBeatApp.swift in Sources */,
+				AABB00000000000000020002 /* ContentView.swift in Sources */,
+				AABB00000000000000020003 /* MySQLConfig.swift in Sources */,
+				AABB00000000000000020004 /* SyncState.swift in Sources */,
+				AABB00000000000000020005 /* HealthDataType.swift in Sources */,
+				AABB00000000000000020006 /* HealthRecord.swift in Sources */,
+				AABB00000000000000020007 /* MySQLService.swift in Sources */,
+				AABB00000000000000020008 /* SchemaService.swift in Sources */,
+				AABB00000000000000020009 /* HealthKitService.swift in Sources */,
+				AABB0000000000000002000A /* SyncService.swift in Sources */,
+				AABB0000000000000002000B /* SyncViewModel.swift in Sources */,
+				AABB0000000000000002000C /* SettingsViewModel.swift in Sources */,
+				AABB0000000000000002000D /* DataBrowserViewModel.swift in Sources */,
+				AABB0000000000000002000E /* CategoryStatusCard.swift in Sources */,
+				AABB0000000000000002000F /* SyncDashboardView.swift in Sources */,
+				AABB00000000000000020010 /* DataBrowserView.swift in Sources */,
+				AABB00000000000000020011 /* QuantityDataView.swift in Sources */,
+				AABB00000000000000020012 /* WorkoutDataView.swift in Sources */,
+				AABB00000000000000020013 /* SleepDataView.swift in Sources */,
+				AABB00000000000000020014 /* CategoryDataView.swift in Sources */,
+				AABB00000000000000020035 /* MedicationDataView.swift in Sources */,
+				AABB00000000000000020039 /* LocationTrackDataView.swift in Sources */,
+				AABB0000000000000002003A /* CheckInDataView.swift in Sources */,
+				AABB0000000000000002003B /* DataValidationViewModel.swift in Sources */,
+				AABB0000000000000002003C /* DataValidationView.swift in Sources */,
+				AABB0000000000000002003D /* BrandFooter.swift in Sources */,
+				AABB00000000000000020015 /* SettingsView.swift in Sources */,
+				AABB00000000000000020016 /* MySQLSettingsView.swift in Sources */,
+				AABB00000000000000020017 /* HealthPermissionsView.swift in Sources */,
+				AABB00000000000000020024 /* SyncActivityAttributes.swift in Sources */,
+				AABB00000000000000020028 /* LocationConfig.swift in Sources */,
+				AABB00000000000000020029 /* GeoFence.swift in Sources */,
+				AABB0000000000000002002A /* LocationService.swift in Sources */,
+				AABB0000000000000002002B /* LocationViewModel.swift in Sources */,
+				AABB0000000000000002002C /* LocationSettingsView.swift in Sources */,
+				AABB0000000000000002002D /* GeoFenceEditView.swift in Sources */,
+				AABB0000000000000002002F /* PlaceCategory.swift in Sources */,
+				AABB00000000000000020030 /* PlaceCategoriesView.swift in Sources */,
+				AABB00000000000000020031 /* BackupManager.swift in Sources */,
+				AABB00000000000000020032 /* BackupConfig.swift in Sources */,
+				AABB00000000000000020033 /* BackupSettingsView.swift in Sources */,
+				AABB00000000000000020034 /* BackupViewModel.swift in Sources */,
+				AABB00000000000000020036 /* BackgroundSyncManager.swift in Sources */,
+				AABB00000000000000020037 /* iCloudSyncService.swift in Sources */,
+				AABB00000000000000020038 /* iCloudSyncSettingsView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AABB00000000000000040004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AABB00000000000000020020 /* HealthBeatWidgetsBundle.swift in Sources */,
+				AABB00000000000000020021 /* SyncLiveActivity.swift in Sources */,
+				AABB00000000000000020023 /* SyncActivityAttributes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AABB00000000000000070002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AABB00000000000000060003 /* Health BeatWidgets */;
+			targetProxy = AABB00000000000000070001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		AABB00000000000000050003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		AABB00000000000000050004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		AABB00000000000000050005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Sources/HealthBeat/Resources/HealthBeat.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/HealthBeat/Resources/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Health Beat";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ee.klemens.healthbeat;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AABB00000000000000050006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Sources/HealthBeat/Resources/HealthBeat.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/HealthBeat/Resources/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Health Beat";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ee.klemens.healthbeat;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		AABB00000000000000050007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/HealthBeatWidgets/WidgetInfo.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ee.klemens.healthbeat.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AABB00000000000000050008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/HealthBeatWidgets/WidgetInfo.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ee.klemens.healthbeat.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AABB00000000000000050001 /* Build configuration list for PBXProject "Health Beat" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AABB00000000000000050003 /* Debug */,
+				AABB00000000000000050004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AABB00000000000000050002 /* Build configuration list for PBXNativeTarget "Health Beat" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AABB00000000000000050005 /* Debug */,
+				AABB00000000000000050006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AABB00000000000000050009 /* Build configuration list for PBXNativeTarget "Health BeatWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AABB00000000000000050007 /* Debug */,
+				AABB00000000000000050008 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AABB00000000000000060002 /* Project object */;
+}
