@@ -138,6 +138,7 @@ final class SettingsViewModel: ObservableObject {
             UserDefaults.standard.set(true, forKey: "hk_permissions_requested")
             permissionsRequested = true
             refreshPermissionsState()
+            BackgroundSyncManager.shared.reEnableBackgroundDelivery()
         }
     }
 
@@ -151,6 +152,7 @@ final class SettingsViewModel: ObservableObject {
                 errorMessage = "HealthKit authorization failed: \(error.localizedDescription)"
             }
             refreshPermissionsState()
+            BackgroundSyncManager.shared.reEnableBackgroundDelivery()
         }
     }
 

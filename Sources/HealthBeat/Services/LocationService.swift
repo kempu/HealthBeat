@@ -194,6 +194,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             if self.pendingLocations.count >= 100 {
                 await self.flushPendingLocations()
             }
+            BackgroundSyncManager.shared.triggerPeriodicSync()
         }
     }
 

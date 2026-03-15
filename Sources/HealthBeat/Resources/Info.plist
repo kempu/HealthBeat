@@ -5,6 +5,7 @@
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>ee.klemens.healthbeat.sync</string>
+		<string>ee.klemens.healthbeat.refresh</string>
 	</array>
 	<key>CFBundleDisplayName</key>
 	<string>Health Beat</string>

@@ -1067,6 +1067,163 @@ final class SyncService: ObservableObject {
         syncState.isIncrementalSyncRunning = false
     }
 
+    // MARK: - Targeted sync (observer-triggered, single/few categories)
+
+    /// Lightweight sync that only processes the specified categories. Used by BackgroundSyncManager
+    /// when an HKObserverQuery fires, so we complete within the ~30s background time limit.
+    func runTargetedSync(categoryIDs: Set<String>, config: MySQLConfig) async {
+        guard !syncState.isAnySyncRunning else { return }
+        syncState.isIncrementalSyncRunning = true
+        SyncService.isSyncRunning = true
+        defer { SyncService.isSyncRunning = false }
+        syncState.errorMessage = nil
+
+        do {
+            if isBackgroundSync {
+                guard UIApplication.shared.isProtectedDataAvailable else {
+                    syncState.isIncrementalSyncRunning = false
+                    return
+                }
+            }
+
+            try await connectMySQL(config: config)
+            guard let mysql = mysql else { throw MySQLError.disconnected }
+
+            let (ok, schemaErr) = await SchemaService.initializeSchema(mysql: mysql)
+            if !ok { throw MySQLError.queryError(code: 0, message: schemaErr ?? "Schema error") }
+
+            let lastSync = try await lastCompletedSyncDate(mysql: mysql)
+            let distantPast = Calendar.current.date(from: DateComponents(year: 2000, month: 1, day: 1))!
+            let querySince = lastSync.map { $0.addingTimeInterval(-7 * 24 * 3600) } ?? distantPast
+
+            @MainActor func liveMySQL() async throws -> MySQLService {
+                try await ensureMySQLConnected(config: config)
+                guard let m = self.mysql else { throw MySQLError.disconnected }
+                return m
+            }
+
+            var total = 0
+
+            // Sync only the quantity categories that were triggered
+            for (cat, types) in HealthDataTypes.quantityTypesByCategory {
+                let catID = "qty_\(cat.rawValue)"
+                guard categoryIDs.contains(catID) else { continue }
+                try Task.checkCancellation()
+
+                var catDelta = 0
+                var activeMySQL = try await liveMySQL()
+                for typeDesc in types {
+                    try Task.checkCancellation()
+                    do {
+                        catDelta += try await syncQuantityType(typeDesc: typeDesc, mysql: activeMySQL, since: querySince)
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch where SyncService.isConnectionError(error) {
+                        do {
+                            activeMySQL = try await liveMySQL()
+                            catDelta += try await syncQuantityType(typeDesc: typeDesc, mysql: activeMySQL, since: querySince)
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch {}
+                    } catch {
+                        if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {}
+                    }
+                }
+                total += catDelta
+            }
+
+            // Sync special categories only if triggered
+            if categoryIDs.contains("cat_category") {
+                try Task.checkCancellation()
+                let m = try await liveMySQL()
+                do { total += try await syncCategorySamples(mysql: m, since: querySince) }
+                catch is CancellationError { throw CancellationError() }
+                catch {}
+            }
+
+            if categoryIDs.contains("cat_workouts") {
+                try Task.checkCancellation()
+                let m = try await liveMySQL()
+                do { total += try await syncWorkouts(mysql: m, since: querySince) }
+                catch is CancellationError { throw CancellationError() }
+                catch {}
+            }
+
+            if categoryIDs.contains("cat_bp") {
+                try Task.checkCancellation()
+                let m = try await liveMySQL()
+                do { total += try await syncBloodPressure(mysql: m, since: querySince) }
+                catch is CancellationError { throw CancellationError() }
+                catch {}
+            }
+
+            if categoryIDs.contains("cat_ecg") {
+                try Task.checkCancellation()
+                let m = try await liveMySQL()
+                do { total += try await syncECG(mysql: m, since: querySince) }
+                catch is CancellationError { throw CancellationError() }
+                catch {}
+            }
+
+            if categoryIDs.contains("cat_audiogram") {
+                try Task.checkCancellation()
+                let m = try await liveMySQL()
+                do { total += try await syncAudiograms(mysql: m, since: querySince) }
+                catch is CancellationError { throw CancellationError() }
+                catch {}
+            }
+
+            if categoryIDs.contains("cat_activity_summaries") {
+                try Task.checkCancellation()
+                let m = try await liveMySQL()
+                do { total += try await syncActivitySummaries(mysql: m, since: querySince) }
+                catch is CancellationError { throw CancellationError() }
+                catch {}
+            }
+
+            if categoryIDs.contains("cat_workout_routes") {
+                try Task.checkCancellation()
+                let m = try await liveMySQL()
+                do { total += try await syncWorkoutRoutes(mysql: m, since: querySince) }
+                catch is CancellationError { throw CancellationError() }
+                catch {}
+            }
+
+            if categoryIDs.contains("cat_medications") {
+                try Task.checkCancellation()
+                let m = try await liveMySQL()
+                do { total += try await syncMedications(mysql: m, since: querySince) }
+                catch is CancellationError { throw CancellationError() }
+                catch {}
+            }
+
+            if categoryIDs.contains("cat_vision") {
+                try Task.checkCancellation()
+                let m = try await liveMySQL()
+                do { total += try await syncVisionPrescriptions(mysql: m, since: querySince) }
+                catch is CancellationError { throw CancellationError() }
+                catch {}
+            }
+
+            if categoryIDs.contains("cat_state_of_mind") {
+                try Task.checkCancellation()
+                let m = try await liveMySQL()
+                do { total += try await syncStateOfMind(mysql: m, since: querySince) }
+                catch is CancellationError { throw CancellationError() }
+                catch {}
+            }
+
+            disconnectMySQL()
+        } catch is CancellationError {
+            disconnectMySQL()
+        } catch {
+            disconnectMySQL()
+            syncState.errorMessage = error.localizedDescription
+        }
+
+        syncState.isIncrementalSyncRunning = false
+    }
+
     // MARK: - Activity summary sync
 
     private func syncActivitySummaries(mysql: MySQLService, since: Date?, until: Date? = nil) async throws -> Int {

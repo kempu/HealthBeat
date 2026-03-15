@@ -43,16 +43,28 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // Check for due auto backup on launch (applicationWillEnterForeground is not called on initial launch)
         Task { @MainActor in BackupManager.shared.runAutoBackupIfNeeded() }
 
+        // Trigger sync when device is unlocked (protected data becomes available)
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+            object: nil, queue: .main
+        ) { _ in
+            Task { @MainActor in
+                BackgroundSyncManager.shared.triggerForegroundSync()
+            }
+        }
+
         return true
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
         Task { @MainActor in BackupManager.shared.runAutoBackupIfNeeded() }
+        Task { @MainActor in BackgroundSyncManager.shared.triggerForegroundSync() }
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
         Task { await LocationService.shared.flushPendingLocations() }
         scheduleNextBackgroundSync()
+        scheduleNextBackgroundRefresh()
 
         // Wrap auto-backup in a background task so iOS doesn't suspend us mid-write
         var bgTaskID = UIBackgroundTaskIdentifier.invalid
@@ -73,6 +85,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             using: nil
         ) { task in
             self.handleBackgroundSync(task: task as! BGProcessingTask)
+        }
+
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: "ee.klemens.healthbeat.refresh",
+            using: nil
+        ) { task in
+            self.handleBackgroundRefresh(task: task as! BGAppRefreshTask)
         }
     }
 
@@ -130,10 +149,55 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         }
     }
 
+    private func handleBackgroundRefresh(task: BGAppRefreshTask) {
+        scheduleNextBackgroundRefresh()
+
+        guard UserDefaults.standard.bool(forKey: "backgroundSyncEnabled") else {
+            task.setTaskCompleted(success: true)
+            return
+        }
+        guard iCloudSyncService.shared.isCurrentDeviceActiveForAutoSync else {
+            task.setTaskCompleted(success: true)
+            return
+        }
+
+        let config = MySQLConfig.load()
+
+        let syncTask: Task<Void, Never> = Task { @MainActor in
+            guard !SyncService.isSyncRunning else {
+                task.setTaskCompleted(success: true)
+                return
+            }
+            let state = SyncState()
+            let service = SyncService(syncState: state)
+            service.isBackgroundSync = true
+            service.suppressLiveActivity = true
+            await service.runIncrementalSync(config: config)
+            if let error = state.errorMessage {
+                BackgroundSyncManager.shared.postFailureNotification(error)
+            }
+            task.setTaskCompleted(success: true)
+        }
+
+        task.expirationHandler = {
+            syncTask.cancel()
+            Task {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                task.setTaskCompleted(success: false)
+            }
+        }
+    }
+
     func scheduleNextBackgroundSync() {
         let request = BGProcessingTaskRequest(identifier: "ee.klemens.healthbeat.sync")
         request.requiresNetworkConnectivity = true
         request.requiresExternalPower = false
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60) // 15 min
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
+    private func scheduleNextBackgroundRefresh() {
+        let request = BGAppRefreshTaskRequest(identifier: "ee.klemens.healthbeat.refresh")
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60) // 15 min
         try? BGTaskScheduler.shared.submit(request)
     }
