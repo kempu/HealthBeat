@@ -74,7 +74,7 @@ final class BackgroundSyncManager {
             print("[BackgroundSyncManager] triggerForegroundSync skipped — backgroundSyncEnabled is false")
             return
         }
-        guard !SyncService.isSyncRunning else {
+        guard !SyncService.isSyncEffectivelyRunning() else {
             print("[BackgroundSyncManager] triggerForegroundSync skipped — sync already running")
             return
         }
@@ -90,7 +90,24 @@ final class BackgroundSyncManager {
         let service = SyncService(syncState: state)
         service.isBackgroundSync = true
         service.suppressLiveActivity = true
-        Task { await service.runIncrementalSync(config: config) }
+
+        var bgTaskID: UIBackgroundTaskIdentifier = .invalid
+        bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "foreground-sync") {
+            UIApplication.shared.endBackgroundTask(bgTaskID)
+            bgTaskID = .invalid
+        }
+        Task {
+            await service.runIncrementalSync(config: config)
+            // If HealthKit was inaccessible (device locked), reset the cooldown so the
+            // next trigger (e.g. device unlock, foreground entry) isn't blocked.
+            if state.errorMessage?.contains("HealthKit inaccessible") == true {
+                print("[BackgroundSyncManager] Resetting foreground sync cooldown — HK was inaccessible")
+                self.lastForegroundSyncDate = .distantPast
+            }
+            if bgTaskID != .invalid {
+                UIApplication.shared.endBackgroundTask(bgTaskID)
+            }
+        }
     }
 
     /// Throttled sync trigger called from location updates. Since location tracking provides
@@ -207,7 +224,7 @@ final class BackgroundSyncManager {
             print("[BackgroundSyncManager] triggerTargetedSync skipped — backgroundSyncEnabled is false")
             return
         }
-        guard !isSyncing, !SyncService.isSyncRunning else {
+        guard !isSyncing, !SyncService.isSyncEffectivelyRunning() else {
             print("[BackgroundSyncManager] triggerTargetedSync skipped — sync already running")
             return
         }

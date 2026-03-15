@@ -118,7 +118,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             // state and scheduling follow-up work on its own. Without this guard, the
             // BGProcessingTask would create a second SyncService and run a concurrent
             // MySQL connection competing for row locks on the same tables.
-            guard !SyncService.isSyncRunning else {
+            guard !SyncService.isSyncEffectivelyRunning() else {
                 task.setTaskCompleted(success: true)
                 return
             }
@@ -164,7 +164,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         let config = MySQLConfig.load()
 
         let syncTask: Task<Void, Never> = Task { @MainActor in
-            guard !SyncService.isSyncRunning else {
+            guard !SyncService.isSyncEffectivelyRunning() else {
                 task.setTaskCompleted(success: true)
                 return
             }

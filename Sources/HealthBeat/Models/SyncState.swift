@@ -16,6 +16,7 @@ struct PersistedSnapshot: Codable {
     let hasCompletedFullSync: Bool?
     let backfillCursors: [String: Date]?
     let backfillAnchorDate: Date?
+    let incrementalCursors: [String: Date]?
 }
 
 // MARK: -
@@ -79,6 +80,7 @@ class SyncState: ObservableObject {
     @Published var hasCompletedFullSync: Bool = false
     @Published var backfillCursors: [String: Date] = [:]
     @Published var backfillAnchorDate: Date?
+    @Published var incrementalCursors: [String: Date] = [:]
 
     var isAnySyncRunning: Bool { isFullSyncRunning || isIncrementalSyncRunning }
 
@@ -97,6 +99,7 @@ class SyncState: ObservableObject {
     func resetAllLocalState() {
         backfillCursors = [:]
         backfillAnchorDate = nil
+        incrementalCursors = [:]
         hasCompletedFullSync = false
         lastSyncDate = nil
         totalRecords = 0
@@ -113,12 +116,36 @@ class SyncState: ObservableObject {
 
     func resetCategoryLocalState(_ id: String) {
         backfillCursors.removeValue(forKey: id)
+        // Remove per-type incremental cursors belonging to this category
+        let typeIDs = Self.typeIDs(forCategory: id)
+        if typeIDs.isEmpty {
+            // Special categories use category-level keys
+            incrementalCursors.removeValue(forKey: id)
+        } else {
+            for typeID in typeIDs {
+                incrementalCursors.removeValue(forKey: typeID)
+            }
+        }
         guard let idx = categories.firstIndex(where: { $0.id == id }) else { return }
         categories[idx].status = .idle
         categories[idx].recordCount = 0
         categories[idx].lastSyncDate = nil
         categories[idx].currentProgress = 0
         persist()
+    }
+
+    /// Maps a category ID (e.g. "qty_Activity", "cat_category") to the set of HK type identifiers it contains.
+    static func typeIDs(forCategory catID: String) -> [String] {
+        if catID.hasPrefix("qty_") {
+            let rawCat = String(catID.dropFirst(4))
+            guard let cat = HealthCategory(rawValue: rawCat) else { return [] }
+            return HealthDataTypes.allQuantityTypes.filter { $0.category == cat }.map(\.id)
+        }
+        if catID == "cat_category" {
+            return HealthDataTypes.allCategoryTypes.map(\.id)
+        }
+        // Special categories (workouts, bp, ecg, etc.) are atomic — no sub-types
+        return []
     }
 
     func recalcOverall() {
@@ -152,7 +179,8 @@ class SyncState: ObservableObject {
             totalRecords: totalRecords,
             hasCompletedFullSync: hasCompletedFullSync,
             backfillCursors: backfillCursors.isEmpty ? nil : backfillCursors,
-            backfillAnchorDate: backfillAnchorDate
+            backfillAnchorDate: backfillAnchorDate,
+            incrementalCursors: incrementalCursors.isEmpty ? nil : incrementalCursors
         )
         if let data = try? JSONEncoder().encode(snap) {
             UserDefaults.standard.set(data, forKey: Self.userDefaultsKey)
@@ -171,6 +199,7 @@ class SyncState: ObservableObject {
         hasCompletedFullSync = snap.hasCompletedFullSync ?? false
         backfillCursors = snap.backfillCursors ?? [:]
         backfillAnchorDate = snap.backfillAnchorDate
+        incrementalCursors = snap.incrementalCursors ?? [:]
         for persisted in snap.categories {
             guard let idx = categories.firstIndex(where: { $0.id == persisted.id }) else { continue }
             categories[idx].recordCount = persisted.recordCount

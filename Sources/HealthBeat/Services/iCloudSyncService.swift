@@ -255,11 +255,12 @@ final class iCloudSyncService: ObservableObject {
             }
         }
 
-        // Prefer local cursor state — backfill progress is device-specific and should
-        // not be discarded when iCloud delivers remote changes from another session.
+        // Prefer local cursor state — backfill/incremental progress is device-specific
+        // and should not be discarded when iCloud delivers remote changes from another session.
         // Fall back to remote if local has none (e.g. fresh install restoring from iCloud).
         let mergedCursors = local.backfillCursors ?? remote.backfillCursors
         let mergedAnchor = local.backfillAnchorDate ?? remote.backfillAnchorDate
+        let mergedIncrementalCursors = local.incrementalCursors ?? remote.incrementalCursors
 
         return PersistedSnapshot(
             lastSyncDate: mergedLastSync,
@@ -267,7 +268,8 @@ final class iCloudSyncService: ObservableObject {
             totalRecords: mergedTotal,
             hasCompletedFullSync: mergedFullSync,
             backfillCursors: mergedCursors,
-            backfillAnchorDate: mergedAnchor
+            backfillAnchorDate: mergedAnchor,
+            incrementalCursors: mergedIncrementalCursors
         )
     }
 
