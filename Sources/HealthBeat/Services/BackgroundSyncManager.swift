@@ -97,11 +97,12 @@ final class BackgroundSyncManager {
             bgTaskID = .invalid
         }
         Task {
+            let protectedBefore = UIApplication.shared.isProtectedDataAvailable
             await service.runIncrementalSync(config: config)
-            // If HealthKit was inaccessible (device locked), reset the cooldown so the
+            // If device was locked (HealthKit inaccessible), reset the cooldown so the
             // next trigger (e.g. device unlock, foreground entry) isn't blocked.
-            if state.errorMessage?.contains("HealthKit inaccessible") == true {
-                print("[BackgroundSyncManager] Resetting foreground sync cooldown — HK was inaccessible")
+            if !protectedBefore {
+                print("[BackgroundSyncManager] Resetting foreground sync cooldown — device was locked")
                 self.lastForegroundSyncDate = .distantPast
             }
             if bgTaskID != .invalid {

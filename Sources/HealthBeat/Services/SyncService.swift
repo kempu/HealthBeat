@@ -1095,7 +1095,6 @@ final class SyncService: ObservableObject {
             // This ensures the next sync (when device is unlocked) will still find new data.
             if total == 0, hkInaccessibleCount > 0 {
                 print("[SyncService] Incremental sync: HealthKit inaccessible for \(hkInaccessibleCount) types — deleting log entry")
-                syncState.errorMessage = "HealthKit inaccessible (device locked)"
                 await deleteSyncLog(mysql: finalMySQL, id: logID)
             } else {
                 print("[SyncService] Incremental sync completed: \(total) records, \(failedCategories.count) failed categories, \(hkInaccessibleCount) HK-inaccessible")
@@ -1429,7 +1428,7 @@ final class SyncService: ObservableObject {
 
             print("[SyncService] Targeted sync completed: \(total) records, \(hkInaccessibleCount) HK-inaccessible")
             if hkInaccessibleCount > 0 {
-                syncState.errorMessage = "HealthKit inaccessible (device locked)"
+                print("[SyncService] Targeted sync: HealthKit inaccessible for \(hkInaccessibleCount) types (device locked) — will retry next opportunity")
             }
             disconnectMySQL()
         } catch is CancellationError {
