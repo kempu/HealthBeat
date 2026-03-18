@@ -182,7 +182,7 @@ actor MySQLService {
     // MARK: - Packet I/O
 
     private func startReceiving() {
-        guard !isReceiving, let conn = connection else { return }
+        guard !isReceiving, connectionError == nil, let conn = connection else { return }
         isReceiving = true
         // Dispatch conn.receive() to the NWConnection's own DispatchQueue, not the actor's
         // executor. NWConnection uses DispatchQueue.sync internally; calling it from Swift's
@@ -214,14 +214,12 @@ actor MySQLService {
         }
 
         if isComplete {
-            // The server closed the connection. Fail any waiters that are still
-            // waiting for bytes — otherwise they hang forever and the sync stalls
-            // until iOS kills the app.
-            if !receiveWaiters.isEmpty {
-                connectionError = MySQLError.disconnected
-                for w in receiveWaiters { w.cont.resume(throwing: MySQLError.disconnected) }
-                receiveWaiters = []
-            }
+            // The server closed the connection. Always mark the connection as dead
+            // so future waitForBytes/sendQuery calls fail immediately instead of
+            // hanging on a conn.receive() that will never call back.
+            connectionError = connectionError ?? MySQLError.disconnected
+            for w in receiveWaiters { w.cont.resume(throwing: connectionError!) }
+            receiveWaiters = []
         } else {
             startReceiving()
         }
@@ -243,6 +241,12 @@ actor MySQLService {
         if receiveBuffer.count >= n { return }
         if let err = connectionError { throw err }
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            // Re-check connectionError inside the continuation body — it may have
+            // been set between the check above and entering the continuation.
+            if let err = connectionError {
+                cont.resume(throwing: err)
+                return
+            }
             receiveWaiters.append((needed: n, cont: cont))
             startReceiving()
         }
@@ -266,6 +270,7 @@ actor MySQLService {
     }
 
     private func sendPacket(seq: UInt8, payload: Data) async throws {
+        if let err = connectionError { throw err }
         guard let conn = connection else { throw MySQLError.disconnected }
         var pkt = Data(capacity: 4 + payload.count)
         let len = payload.count

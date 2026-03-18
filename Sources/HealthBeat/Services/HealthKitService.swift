@@ -230,15 +230,41 @@ final class HealthKitService {
     func fetchECGVoltageMeasurements(for ecg: HKElectrocardiogram) async throws -> [HKElectrocardiogram.VoltageMeasurement] {
         try await withCheckedThrowingContinuation { continuation in
             var measurements: [HKElectrocardiogram.VoltageMeasurement] = []
+            let lock = NSLock()
+            var resumed = false
+
+            // 30-second safety timeout
+            DispatchQueue.global().asyncAfter(deadline: .now() + 30) {
+                lock.lock()
+                defer { lock.unlock() }
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(returning: [])
+            }
+
             let query = HKElectrocardiogramQuery(ecg) { _, result in
                 switch result {
                 case .measurement(let m):
+                    lock.lock()
                     measurements.append(m)
+                    lock.unlock()
                 case .done:
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard !resumed else { return }
+                    resumed = true
                     continuation.resume(returning: measurements)
                 case .error(let err):
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard !resumed else { return }
+                    resumed = true
                     continuation.resume(throwing: err)
                 @unknown default:
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard !resumed else { return }
+                    resumed = true
                     continuation.resume(returning: measurements)
                 }
             }
@@ -325,13 +351,39 @@ final class HealthKitService {
     func fetchRouteLocations(for route: HKWorkoutRoute) async throws -> [CLLocation] {
         try await withCheckedThrowingContinuation { continuation in
             var locations: [CLLocation] = []
+            let lock = NSLock()
+            var resumed = false
+
+            // 30-second safety timeout — some routes never call done:true
+            DispatchQueue.global().asyncAfter(deadline: .now() + 30) {
+                lock.lock()
+                defer { lock.unlock() }
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(returning: [])
+            }
+
             let query = HKWorkoutRouteQuery(route: route) { _, newLocations, done, error in
                 if let error = error {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard !resumed else { return }
+                    resumed = true
                     continuation.resume(throwing: error)
                     return
                 }
-                if let locs = newLocations { locations.append(contentsOf: locs) }
-                if done { continuation.resume(returning: locations) }
+                if let locs = newLocations {
+                    lock.lock()
+                    locations.append(contentsOf: locs)
+                    lock.unlock()
+                }
+                if done {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard !resumed else { return }
+                    resumed = true
+                    continuation.resume(returning: locations)
+                }
             }
             store.execute(query)
         }
