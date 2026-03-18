@@ -3,8 +3,10 @@ import UIKit
 
 struct SyncDashboardView: View {
     @ObservedObject var vm: SyncViewModel
+    @Binding var showReminderSync: Bool
     @ObservedObject private var iCloud = iCloudSyncService.shared
     @State private var navigateToHealthPermissions = false
+    @State private var showSyncCompletedBanner = false
     @AppStorage("keepScreenOnDuringSync") private var keepScreenOnDuringSync = true
 
     var body: some View {
@@ -47,13 +49,32 @@ struct SyncDashboardView: View {
                 }
 
                 // Full sync screen-on reminder
-                if vm.isFullSyncRunning {
+                if vm.isFullSyncRunning && !vm.isReminderSync {
                     Section {
                         noticeBanner(
                             icon: "lock.open.display",
                             color: .blue,
                             title: "Keep Screen On",
                             message: "Apple HealthKit is not accessible when the device is locked. Keep the screen on until the full sync completes."
+                        )
+                    }
+                }
+
+                // Reminder sync banner
+                if vm.isReminderSync && vm.isAnySyncRunning {
+                    Section {
+                        reminderSyncBanner
+                    }
+                }
+
+                // Sync completed banner (after reminder sync)
+                if showSyncCompletedBanner {
+                    Section {
+                        noticeBanner(
+                            icon: "checkmark.circle.fill",
+                            color: .green,
+                            title: "Sync Complete",
+                            message: "All health data has been synced to the database."
                         )
                     }
                 }
@@ -125,6 +146,21 @@ struct SyncDashboardView: View {
             }
             .onDisappear {
                 UIApplication.shared.isIdleTimerDisabled = false
+            }
+            .onChange(of: showReminderSync) { _, shouldStart in
+                if shouldStart {
+                    showReminderSync = false
+                    vm.startReminderSync()
+                }
+            }
+            .onChange(of: vm.isReminderSync) { oldValue, newValue in
+                if oldValue && !newValue {
+                    showSyncCompletedBanner = true
+                    Task {
+                        try? await Task.sleep(nanoseconds: 10_000_000_000)
+                        showSyncCompletedBanner = false
+                    }
+                }
             }
             .alert("Sync Prerequisites", isPresented: $vm.showPrerequisiteAlert) {
                 Button("Continue Anyway") { }
@@ -236,6 +272,30 @@ struct SyncDashboardView: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+        .listRowBackground(Color.clear)
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+    }
+
+    private var reminderSyncBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.clockwise.icloud.fill")
+                .foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Full Sync in Progress")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                (Text("Apple Health data is only accessible while the screen is unlocked. ")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                + Text("Keep the app in the foreground and screen unlocked until sync completes.")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary))
+                    .lineLimit(4)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
         .listRowBackground(Color.clear)
         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
     }

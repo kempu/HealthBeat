@@ -13,6 +13,7 @@ final class SyncViewModel: ObservableObject {
 
     @Published var prerequisiteIssues: [SyncPrerequisiteIssue] = []
     @Published var showPrerequisiteAlert = false
+    @Published var isReminderSync = false
 
     init() {
         let state = SyncState()
@@ -70,6 +71,21 @@ final class SyncViewModel: ObservableObject {
             await syncService.runFullSync(config: config)
             refreshRecordCounts()
             refreshLatestHealthKitDates()
+        }
+        syncTask = task
+        syncService.taskForCancellation = task
+    }
+
+    func startReminderSync() {
+        guard !isAnySyncRunning else { return }
+        isReminderSync = true
+        syncState.currentOperation = "Sync triggered by reminder — keep screen unlocked"
+        let config = MySQLConfig.load()
+        let task = Task {
+            await syncService.runFullSync(config: config)
+            refreshRecordCounts()
+            refreshLatestHealthKitDates()
+            isReminderSync = false
         }
         syncTask = task
         syncService.taskForCancellation = task

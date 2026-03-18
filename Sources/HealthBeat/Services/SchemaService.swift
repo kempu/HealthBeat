@@ -267,10 +267,17 @@ struct SchemaService {
         ],
     ]
 
+    /// Session-level cache: once schema is initialized, skip DDL + migrations for the rest
+    /// of the app session. Resets on app termination — safe because schema changes only come
+    /// from app updates which restart the process.
+    private static var schemaInitialized = false
+
     // MARK: - Public API
 
     /// Create all tables and run any pending migrations. Returns (success, errorMessage).
     static func initializeSchema(mysql: MySQLService) async -> (Bool, String?) {
+        if schemaInitialized { return (true, nil) }
+
         // Create base tables
         for stmt in tableStatements {
             do {
@@ -281,6 +288,9 @@ struct SchemaService {
         }
         // Run migrations for existing databases
         let migrationResult = await runMigrations(mysql: mysql)
+        if migrationResult.0 {
+            schemaInitialized = true
+        }
         return migrationResult
     }
 

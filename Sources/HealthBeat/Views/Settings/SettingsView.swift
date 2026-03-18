@@ -6,6 +6,7 @@ struct SettingsView: View {
     @ObservedObject private var iCloud = iCloudSyncService.shared
     @AppStorage("keepScreenOnDuringSync") private var keepScreenOnDuringSync = true
     @AppStorage("backgroundSyncEnabled") private var backgroundSyncEnabled = true
+    @AppStorage("syncReminderFrequency") private var syncReminderFrequency = "daily"
 
     var body: some View {
         NavigationStack {
@@ -19,7 +20,7 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("MySQL Connection")
                                     .font(.subheadline.weight(.semibold))
-                                Text("\(vm.config.host):\(vm.config.port) / \(vm.config.database)")
+                                Text("\(vm.config.host):\(String(vm.config.port)) / \(vm.config.database)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
@@ -155,6 +156,26 @@ struct SettingsView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
+                    }
+
+                    Picker(selection: $syncReminderFrequency) {
+                        Text("Off").tag("off")
+                        Text("Daily (evening)").tag("daily")
+                        Text("Weekly (Monday evening)").tag("weekly")
+                    } label: {
+                        HStack(spacing: 12) {
+                            iconBox("bell.badge.fill", color: syncReminderFrequency != "off" ? .indigo : .secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Sync Reminder")
+                                    .font(.subheadline.weight(.semibold))
+                                Text(syncReminderFrequency == "off" ? "No reminders" : "Notifies you to open the app for a full sync")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .onChange(of: syncReminderFrequency) { _, _ in
+                        BackgroundSyncManager.scheduleSyncReminder()
                     }
                 }
 

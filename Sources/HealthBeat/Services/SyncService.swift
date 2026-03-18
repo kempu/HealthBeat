@@ -50,6 +50,13 @@ final class SyncService: ObservableObject {
     }
     @MainActor static private var syncRunningStartDate: Date?
 
+    /// Tracks the last time a full 7-day lookback sweep was performed.
+    /// Resets on app termination (non-persisted) — first sync after launch always does a full sweep.
+    @MainActor private static var lastDeepSweepDate: Date = .distantPast
+
+    /// Throttle for cleanupStaleLogEntries — no need to run every 3 minutes.
+    @MainActor private static var lastStaleCleanup: Date = .distantPast
+
     /// Returns true if a sync is actively running. If the flag has been true for longer
     /// than `timeout` seconds (e.g. due to a suspended/frozen task), it's considered stale
     /// and force-reset to false so background syncs aren't blocked indefinitely.
@@ -61,6 +68,83 @@ final class SyncService: ObservableObject {
             return false
         }
         return true
+    }
+
+    // MARK: - Adaptive lookback
+
+    /// Computes the HealthKit query start date for a given type key.
+    /// Routine syncs use a short lookback (1h if cursor is fresh); deep sweeps use the full 7-day
+    /// lookback to catch late-arriving samples.
+    private func adaptiveQuerySince(
+        for key: String,
+        cursors: [String: Date],
+        globalQuerySince: Date,
+        lastSync: Date?,
+        forceDeepSweep: Bool
+    ) -> Date {
+        let distantPast = Calendar.current.date(from: DateComponents(year: 2000, month: 1, day: 1))!
+        guard let cursor = cursors[key] else { return globalQuerySince }
+        let effective = max(cursor, lastSync ?? distantPast)
+
+        if forceDeepSweep {
+            return effective.addingTimeInterval(-7 * 86400)
+        }
+
+        let age = Date().timeIntervalSince(effective)
+        let lookback: TimeInterval
+        if age < 3600 {
+            lookback = 3600       // cursor < 1h old -> look back 1h
+        } else if age < 86400 {
+            lookback = 86400      // cursor < 24h old -> look back 24h
+        } else {
+            lookback = 7 * 86400  // older -> full 7-day lookback
+        }
+        return effective.addingTimeInterval(-lookback)
+    }
+
+    /// Returns true if all type keys in the list have cursors younger than `threshold`.
+    private func allCursorsRecent(_ keys: [String], cursors: [String: Date], threshold: TimeInterval = 300) -> Bool {
+        let now = Date()
+        return keys.allSatisfy { key in
+            guard let cursor = cursors[key] else { return false }
+            return now.timeIntervalSince(cursor) < threshold
+        }
+    }
+
+    // MARK: - Sync unit (for priority sorting)
+
+    private enum SyncUnit {
+        case quantityGroup(HealthCategory, [QuantityTypeDescriptor])
+        case categoryTypes
+        case special(String)  // cat_workouts, cat_bp, cat_ecg, etc.
+
+        var categoryID: String {
+            switch self {
+            case .quantityGroup(let cat, _): return "qty_\(cat.rawValue)"
+            case .categoryTypes: return "cat_category"
+            case .special(let id): return id
+            }
+        }
+
+        var displayLabel: String {
+            switch self {
+            case .quantityGroup(let cat, _): return cat.rawValue
+            case .categoryTypes: return "Health Events"
+            case .special(let id):
+                switch id {
+                case "cat_workouts": return "Workouts"
+                case "cat_bp": return "Blood Pressure"
+                case "cat_ecg": return "ECG"
+                case "cat_audiogram": return "Audiograms"
+                case "cat_activity_summaries": return "Activity Rings"
+                case "cat_workout_routes": return "Workout Routes"
+                case "cat_medications": return "Medications"
+                case "cat_vision": return "Vision"
+                case "cat_state_of_mind": return "State of Mind"
+                default: return id
+                }
+            }
+        }
     }
 
     // Live Activity
@@ -283,9 +367,13 @@ final class SyncService: ObservableObject {
         guard !syncState.isAnySyncRunning else { return }
         syncState.isFullSyncRunning = true
         SyncService.isSyncRunning = true
-        defer { SyncService.isSyncRunning = false }
+        defer {
+            SyncService.isSyncRunning = false
+            syncState.currentSyncCategoryIDs = []
+        }
         syncState.errorMessage = nil
         syncState.currentOperation = "Connecting…"
+        syncState.currentSyncCategoryIDs = [categoryID]
         startLiveActivity(isFullSync: false)
 
         let anchor = Date()
@@ -367,7 +455,10 @@ final class SyncService: ObservableObject {
         guard !syncState.isAnySyncRunning else { return }
         syncState.isFullSyncRunning = true
         SyncService.isSyncRunning = true
-        defer { SyncService.isSyncRunning = false }
+        defer {
+            SyncService.isSyncRunning = false
+            syncState.currentSyncCategoryIDs = []
+        }
         syncState.errorMessage = nil
         syncState.currentOperation = "Connecting…"
         startLiveActivity(isFullSync: true)
@@ -426,6 +517,20 @@ final class SyncService: ObservableObject {
             historicalStart = epoch
         }
         let anchor = syncState.backfillAnchorDate!
+
+        // Compute which categories still need processing (cursor != anchor means not yet done)
+        var pendingIDs = Set<String>()
+        for (cat, _) in HealthDataTypes.quantityTypesByCategory {
+            let catID = "qty_\(cat.rawValue)"
+            if syncState.backfillCursors[catID] != anchor { pendingIDs.insert(catID) }
+        }
+        for (catID, _) in [("cat_category", ""), ("cat_workouts", ""), ("cat_bp", ""),
+                            ("cat_ecg", ""), ("cat_audiogram", ""), ("cat_activity_summaries", ""),
+                            ("cat_workout_routes", ""), ("cat_medications", ""),
+                            ("cat_vision", ""), ("cat_state_of_mind", "")] {
+            if syncState.backfillCursors[catID] != anchor { pendingIDs.insert(catID) }
+        }
+        syncState.currentSyncCategoryIDs = pendingIDs
 
         var syncLogID: Int64 = 0
         do {
@@ -689,7 +794,10 @@ final class SyncService: ObservableObject {
         guard !syncState.isAnySyncRunning else { return }
         syncState.isIncrementalSyncRunning = true
         SyncService.isSyncRunning = true
-        defer { SyncService.isSyncRunning = false }
+        defer {
+            SyncService.isSyncRunning = false
+            syncState.currentSyncCategoryIDs = []
+        }
         syncState.errorMessage = nil
         startLiveActivity(isFullSync: false)
 
@@ -723,6 +831,7 @@ final class SyncService: ObservableObject {
         }
 
         var logID: Int64 = 0
+        var total = 0
         do {
             // Pre-first-unlock guard: isProtectedDataAvailable is false only before the very
             // first unlock after boot. The errorDatabaseInaccessible suppression below handles
@@ -749,7 +858,10 @@ final class SyncService: ObservableObject {
             let (ok, schemaErr) = await SchemaService.initializeSchema(mysql: mysql)
             if !ok { throw MySQLError.queryError(code: 0, message: schemaErr ?? "Schema error") }
 
-            await cleanupStaleLogEntries(mysql: mysql)
+            if Date().timeIntervalSince(SyncService.lastStaleCleanup) > 600 {
+                await cleanupStaleLogEntries(mysql: mysql)
+                SyncService.lastStaleCleanup = Date()
+            }
 
             // Find last sync date. If no completed sync exists (e.g. a full sync was interrupted),
             // fall back to a distant past date so we recover all historical data rather than just 24h.
@@ -761,13 +873,15 @@ final class SyncService: ObservableObject {
             // INSERT IGNORE makes re-syncing the overlap window safe and idempotent.
             let globalQuerySince = lastSync.map { $0.addingTimeInterval(-7 * 24 * 3600) } ?? distantPast
 
+            // Deep sweep: every 2 hours (or first sync after launch), use full 7-day lookback
+            // to catch late-arriving samples. Routine syncs use a short adaptive lookback.
+            let forceDeepSweep = Date().timeIntervalSince(SyncService.lastDeepSweepDate) > 7200
+
             // Per-type incremental cursors: use the later of the global baseline and the
             // type's own cursor so completed types are quickly skipped on re-runs.
             let cursors = syncState.incrementalCursors
             func querySince(for key: String) -> Date {
-                guard let cursor = cursors[key] else { return globalQuerySince }
-                let effective = max(cursor, lastSync ?? distantPast)
-                return effective.addingTimeInterval(-7 * 24 * 3600)
+                adaptiveQuerySince(for: key, cursors: cursors, globalQuerySince: globalQuerySince, lastSync: lastSync, forceDeepSweep: forceDeepSweep)
             }
 
             let opLabel = lastSync != nil
@@ -776,380 +890,185 @@ final class SyncService: ObservableObject {
             syncState.currentOperation = opLabel
 
             logID = try await startSyncLog(mysql: mysql, category: "incremental_sync")
-            var total = 0
             var failedCategories: [String] = []
             var hkInaccessibleCount = 0
 
-            print("[SyncService] Incremental sync: lastSync=\(lastSync?.description ?? "nil"), globalQuerySince=\(globalQuerySince), cursors=\(cursors.count), isBackground=\(isBackgroundSync)")
+            print("[SyncService] Incremental sync: lastSync=\(lastSync?.description ?? "nil"), globalQuerySince=\(globalQuerySince), cursors=\(cursors.count), isBackground=\(isBackgroundSync), deepSweep=\(forceDeepSweep)")
 
+            // Build all sync units and sort by staleness (oldest-synced first)
+            var allUnits: [SyncUnit] = []
             for (cat, types) in HealthDataTypes.quantityTypesByCategory {
-                let catID = "qty_\(cat.rawValue)"
+                allUnits.append(.quantityGroup(cat, types))
+            }
+            allUnits.append(.categoryTypes)
+            for specialID in ["cat_workouts", "cat_bp", "cat_ecg", "cat_audiogram",
+                              "cat_activity_summaries", "cat_workout_routes",
+                              "cat_medications", "cat_vision", "cat_state_of_mind"] {
+                allUnits.append(.special(specialID))
+            }
+
+            let catStates = syncState.categories
+            allUnits.sort { a, b in
+                let dateA = catStates.first(where: { $0.id == a.categoryID })?.lastSyncDate
+                let dateB = catStates.first(where: { $0.id == b.categoryID })?.lastSyncDate
+                switch (dateA, dateB) {
+                case (nil, nil): return false  // stable order
+                case (nil, _): return true     // nil (never synced) goes first
+                case (_, nil): return false
+                case let (a?, b?): return a < b  // oldest first
+                }
+            }
+
+            print("[SyncService] Incremental sync order: \(allUnits.map { "\($0.categoryID)(\(catStates.first(where: { $0.id == $0.id })?.lastSyncDate?.description ?? "nil"))" }.joined(separator: ", "))")
+
+            syncState.currentSyncCategoryIDs = Set(allUnits.map(\.categoryID))
+
+            for unit in allUnits {
+                let catID = unit.categoryID
                 try Task.checkCancellation()
 
+                // In background non-deep-sweep syncs, skip units where all type cursors
+                // are < 5 minutes old — no new data could have arrived since last sync.
+                if isBackgroundSync, !forceDeepSweep {
+                    let typeKeys: [String]
+                    switch unit {
+                    case .quantityGroup(_, let types): typeKeys = types.map(\.id)
+                    case .categoryTypes: typeKeys = HealthDataTypes.allCategoryTypes.map(\.id)
+                    case .special(let id): typeKeys = [id]
+                    }
+                    if allCursorsRecent(typeKeys, cursors: cursors) {
+                        syncState.updateCategory(catID, status: .completed)
+                        continue
+                    }
+                }
+
                 syncState.updateCategory(catID, status: .syncing)
-                var catDelta = 0
-                var failedTypes: [String] = []
-                var activeMySQL = try await liveMySQL()
-                for typeDesc in types {
-                    try Task.checkCancellation()
-                    let typeQuerySince = querySince(for: typeDesc.id)
-                    do {
-                        let count = try await syncQuantityType(typeDesc: typeDesc, mysql: activeMySQL, since: typeQuerySince)
-                        catDelta += count
-                        syncState.incrementalCursors[typeDesc.id] = Date()
-                        syncState.persist()
-                    } catch is CancellationError {
-                        throw CancellationError()
-                    } catch where SyncService.isConnectionError(error) {
+
+                switch unit {
+                case .quantityGroup(let cat, let types):
+                    var catDelta = 0
+                    var failedTypes: [String] = []
+                    var activeMySQL = try await liveMySQL()
+                    for typeDesc in types {
+                        try Task.checkCancellation()
+                        let typeQuerySince = querySince(for: typeDesc.id)
                         do {
-                            activeMySQL = try await liveMySQL()
                             let count = try await syncQuantityType(typeDesc: typeDesc, mysql: activeMySQL, since: typeQuerySince)
                             catDelta += count
                             syncState.incrementalCursors[typeDesc.id] = Date()
                             syncState.persist()
                         } catch is CancellationError {
                             throw CancellationError()
+                        } catch where SyncService.isConnectionError(error) {
+                            do {
+                                activeMySQL = try await liveMySQL()
+                                let count = try await syncQuantityType(typeDesc: typeDesc, mysql: activeMySQL, since: typeQuerySince)
+                                catDelta += count
+                                syncState.incrementalCursors[typeDesc.id] = Date()
+                                syncState.persist()
+                            } catch is CancellationError {
+                                throw CancellationError()
+                            } catch {
+                                failedTypes.append(typeDesc.displayName)
+                            }
                         } catch {
-                            failedTypes.append(typeDesc.displayName)
-                        }
-                    } catch {
-                        if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
-                            hkInaccessibleCount += 1
-                        } else {
-                            failedTypes.append(typeDesc.displayName)
+                            if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
+                                hkInaccessibleCount += 1
+                            } else {
+                                failedTypes.append(typeDesc.displayName)
+                            }
                         }
                     }
-                }
-                let existing = syncState.categories.first(where: { $0.id == catID })?.recordCount ?? 0
-                if failedTypes.isEmpty {
-                    syncState.updateCategory(catID, status: .completed, recordCount: existing + catDelta, lastSyncDate: Date())
-                } else {
-                    failedCategories.append(cat.rawValue)
-                    syncState.updateCategory(catID,
-                        status: .failed("Failed types: \(failedTypes.joined(separator: ", "))"),
-                        recordCount: existing + catDelta, lastSyncDate: Date())
-                }
-                total += catDelta
-                updateLiveActivity(phase: cat.rawValue, operation: "Synced \(cat.rawValue) (\(catDelta) records)", records: total)
-            }
+                    let existing = syncState.categories.first(where: { $0.id == catID })?.recordCount ?? 0
+                    if failedTypes.isEmpty {
+                        syncState.updateCategory(catID, status: .completed, recordCount: existing + catDelta, lastSyncDate: Date())
+                    } else {
+                        failedCategories.append(cat.rawValue)
+                        syncState.updateCategory(catID,
+                            status: .failed("Failed types: \(failedTypes.joined(separator: ", "))"),
+                            recordCount: existing + catDelta, lastSyncDate: Date())
+                    }
+                    total += catDelta
+                    updateLiveActivity(phase: cat.rawValue, operation: "Synced \(cat.rawValue) (\(catDelta) records)", records: total)
 
-            // Category samples — per-type cursors
-            try Task.checkCancellation()
-            syncState.updateCategory("cat_category", status: .syncing)
-            do {
-                var m = try await liveMySQL()
-                var catCount = 0
-                var catFailedTypes: [String] = []
-                for typeDesc in HealthDataTypes.allCategoryTypes {
-                    try Task.checkCancellation()
-                    let typeQuerySince = querySince(for: typeDesc.id)
+                case .categoryTypes:
                     do {
-                        let count = try await syncCategoryType(typeDesc: typeDesc, mysql: m, since: typeQuerySince)
-                        catCount += count
-                        syncState.incrementalCursors[typeDesc.id] = Date()
-                        syncState.persist()
+                        var m = try await liveMySQL()
+                        var catCount = 0
+                        var catFailedTypes: [String] = []
+                        for typeDesc in HealthDataTypes.allCategoryTypes {
+                            try Task.checkCancellation()
+                            let typeQuerySince = querySince(for: typeDesc.id)
+                            do {
+                                let count = try await syncCategoryType(typeDesc: typeDesc, mysql: m, since: typeQuerySince)
+                                catCount += count
+                                syncState.incrementalCursors[typeDesc.id] = Date()
+                                syncState.persist()
+                            } catch is CancellationError {
+                                throw CancellationError()
+                            } catch where SyncService.isConnectionError(error) {
+                                do {
+                                    m = try await liveMySQL()
+                                    let count = try await syncCategoryType(typeDesc: typeDesc, mysql: m, since: typeQuerySince)
+                                    catCount += count
+                                    syncState.incrementalCursors[typeDesc.id] = Date()
+                                    syncState.persist()
+                                } catch is CancellationError {
+                                    throw CancellationError()
+                                } catch {
+                                    catFailedTypes.append(typeDesc.displayName)
+                                }
+                            } catch {
+                                if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
+                                    hkInaccessibleCount += 1
+                                } else {
+                                    catFailedTypes.append(typeDesc.displayName)
+                                }
+                            }
+                        }
+                        let existingCat = syncState.categories.first(where: { $0.id == "cat_category" })?.recordCount ?? 0
+                        if catFailedTypes.isEmpty {
+                            syncState.updateCategory("cat_category", status: .completed, recordCount: existingCat + catCount, lastSyncDate: Date())
+                        } else {
+                            failedCategories.append("Category Samples")
+                            syncState.updateCategory("cat_category",
+                                status: .failed("Failed types: \(catFailedTypes.joined(separator: ", "))"),
+                                recordCount: existingCat + catCount, lastSyncDate: Date())
+                        }
+                        total += catCount
+                        updateLiveActivity(phase: "Health Events", operation: "Synced Health Events (\(catCount) records)", records: total)
                     } catch is CancellationError {
                         throw CancellationError()
-                    } catch where SyncService.isConnectionError(error) {
-                        do {
-                            m = try await liveMySQL()
-                            let count = try await syncCategoryType(typeDesc: typeDesc, mysql: m, since: typeQuerySince)
-                            catCount += count
-                            syncState.incrementalCursors[typeDesc.id] = Date()
-                            syncState.persist()
-                        } catch is CancellationError {
-                            throw CancellationError()
-                        } catch {
-                            catFailedTypes.append(typeDesc.displayName)
-                        }
                     } catch {
                         if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
                             hkInaccessibleCount += 1
                         } else {
-                            catFailedTypes.append(typeDesc.displayName)
+                            failedCategories.append("Category Samples")
+                            syncState.updateCategory("cat_category", status: .failed(error.localizedDescription), lastSyncDate: Date())
                         }
                     }
-                }
-                let existingCat = syncState.categories.first(where: { $0.id == "cat_category" })?.recordCount ?? 0
-                if catFailedTypes.isEmpty {
-                    syncState.updateCategory("cat_category", status: .completed, recordCount: existingCat + catCount, lastSyncDate: Date())
-                } else {
-                    failedCategories.append("Category Samples")
-                    syncState.updateCategory("cat_category",
-                        status: .failed("Failed types: \(catFailedTypes.joined(separator: ", "))"),
-                        recordCount: existingCat + catCount, lastSyncDate: Date())
-                }
-                total += catCount
-                updateLiveActivity(phase: "Health Events", operation: "Synced Health Events (\(catCount) records)", records: total)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
-                    hkInaccessibleCount += 1
-                } else {
-                    failedCategories.append("Category Samples")
-                    syncState.updateCategory("cat_category", status: .failed(error.localizedDescription), lastSyncDate: Date())
-                }
-            }
 
-            try Task.checkCancellation()
-            syncState.updateCategory("cat_workouts", status: .syncing)
-            do {
-                var m = try await liveMySQL()
-                let workoutsQuerySince = querySince(for: "cat_workouts")
-                let workoutCount: Int
-                do {
-                    workoutCount = try await syncWorkouts(mysql: m, since: workoutsQuerySince)
-                } catch where SyncService.isConnectionError(error) {
-                    m = try await liveMySQL()
-                    workoutCount = try await syncWorkouts(mysql: m, since: workoutsQuerySince)
-                }
-                let existingWorkouts = syncState.categories.first(where: { $0.id == "cat_workouts" })?.recordCount ?? 0
-                syncState.updateCategory("cat_workouts", status: .completed, recordCount: existingWorkouts + workoutCount, lastSyncDate: Date())
-                syncState.incrementalCursors["cat_workouts"] = Date()
-                syncState.persist()
-                total += workoutCount
-                updateLiveActivity(phase: "Workouts", operation: "Synced Workouts (\(workoutCount) records)", records: total)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
-                    hkInaccessibleCount += 1
-                } else {
-                    failedCategories.append("Workouts")
-                    syncState.updateCategory("cat_workouts", status: .failed(error.localizedDescription), lastSyncDate: Date())
-                }
-            }
-
-            try Task.checkCancellation()
-            syncState.updateCategory("cat_bp", status: .syncing)
-            do {
-                var m = try await liveMySQL()
-                let bpQuerySince = querySince(for: "cat_bp")
-                let bpCount: Int
-                do {
-                    bpCount = try await syncBloodPressure(mysql: m, since: bpQuerySince)
-                } catch where SyncService.isConnectionError(error) {
-                    m = try await liveMySQL()
-                    bpCount = try await syncBloodPressure(mysql: m, since: bpQuerySince)
-                }
-                let existingBP = syncState.categories.first(where: { $0.id == "cat_bp" })?.recordCount ?? 0
-                syncState.updateCategory("cat_bp", status: .completed, recordCount: existingBP + bpCount, lastSyncDate: Date())
-                syncState.incrementalCursors["cat_bp"] = Date()
-                syncState.persist()
-                total += bpCount
-                updateLiveActivity(phase: "Blood Pressure", operation: "Synced Blood Pressure (\(bpCount) records)", records: total)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
-                    hkInaccessibleCount += 1
-                } else {
-                    failedCategories.append("Blood Pressure")
-                    syncState.updateCategory("cat_bp", status: .failed(error.localizedDescription), lastSyncDate: Date())
-                }
-            }
-
-            try Task.checkCancellation()
-            syncState.updateCategory("cat_ecg", status: .syncing)
-            do {
-                var m = try await liveMySQL()
-                let ecgQuerySince = querySince(for: "cat_ecg")
-                let ecgCount: Int
-                do {
-                    ecgCount = try await syncECG(mysql: m, since: ecgQuerySince)
-                } catch where SyncService.isConnectionError(error) {
-                    m = try await liveMySQL()
-                    ecgCount = try await syncECG(mysql: m, since: ecgQuerySince)
-                }
-                let existingECG = syncState.categories.first(where: { $0.id == "cat_ecg" })?.recordCount ?? 0
-                syncState.updateCategory("cat_ecg", status: .completed, recordCount: existingECG + ecgCount, lastSyncDate: Date())
-                syncState.incrementalCursors["cat_ecg"] = Date()
-                syncState.persist()
-                total += ecgCount
-                updateLiveActivity(phase: "ECG", operation: "Synced ECG (\(ecgCount) records)", records: total)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
-                    hkInaccessibleCount += 1
-                } else {
-                    failedCategories.append("ECG")
-                    syncState.updateCategory("cat_ecg", status: .failed(error.localizedDescription), lastSyncDate: Date())
-                }
-            }
-
-            try Task.checkCancellation()
-            syncState.updateCategory("cat_audiogram", status: .syncing)
-            do {
-                var m = try await liveMySQL()
-                let audioQuerySince = querySince(for: "cat_audiogram")
-                let audioCount: Int
-                do {
-                    audioCount = try await syncAudiograms(mysql: m, since: audioQuerySince)
-                } catch where SyncService.isConnectionError(error) {
-                    m = try await liveMySQL()
-                    audioCount = try await syncAudiograms(mysql: m, since: audioQuerySince)
-                }
-                let existingAudio = syncState.categories.first(where: { $0.id == "cat_audiogram" })?.recordCount ?? 0
-                syncState.updateCategory("cat_audiogram", status: .completed, recordCount: existingAudio + audioCount, lastSyncDate: Date())
-                syncState.incrementalCursors["cat_audiogram"] = Date()
-                syncState.persist()
-                total += audioCount
-                updateLiveActivity(phase: "Audiograms", operation: "Synced Audiograms (\(audioCount) records)", records: total)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
-                    hkInaccessibleCount += 1
-                } else {
-                    failedCategories.append("Audiograms")
-                    syncState.updateCategory("cat_audiogram", status: .failed(error.localizedDescription), lastSyncDate: Date())
-                }
-            }
-
-            try Task.checkCancellation()
-            syncState.updateCategory("cat_activity_summaries", status: .syncing)
-            do {
-                var m = try await liveMySQL()
-                let activityQuerySince = querySince(for: "cat_activity_summaries")
-                let activityCount: Int
-                do {
-                    activityCount = try await syncActivitySummaries(mysql: m, since: activityQuerySince)
-                } catch where SyncService.isConnectionError(error) {
-                    m = try await liveMySQL()
-                    activityCount = try await syncActivitySummaries(mysql: m, since: activityQuerySince)
-                }
-                let existingActivity = syncState.categories.first(where: { $0.id == "cat_activity_summaries" })?.recordCount ?? 0
-                syncState.updateCategory("cat_activity_summaries", status: .completed, recordCount: existingActivity + activityCount, lastSyncDate: Date())
-                syncState.incrementalCursors["cat_activity_summaries"] = Date()
-                syncState.persist()
-                total += activityCount
-                updateLiveActivity(phase: "Activity Rings", operation: "Synced Activity Rings (\(activityCount) records)", records: total)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
-                    hkInaccessibleCount += 1
-                } else {
-                    failedCategories.append("Activity Summaries")
-                    syncState.updateCategory("cat_activity_summaries", status: .failed(error.localizedDescription), lastSyncDate: Date())
-                }
-            }
-
-            try Task.checkCancellation()
-            syncState.updateCategory("cat_workout_routes", status: .syncing)
-            do {
-                var m = try await liveMySQL()
-                let routesQuerySince = querySince(for: "cat_workout_routes")
-                let routeCount: Int
-                do {
-                    routeCount = try await syncWorkoutRoutes(mysql: m, since: routesQuerySince)
-                } catch where SyncService.isConnectionError(error) {
-                    m = try await liveMySQL()
-                    routeCount = try await syncWorkoutRoutes(mysql: m, since: routesQuerySince)
-                }
-                let existingRoutes = syncState.categories.first(where: { $0.id == "cat_workout_routes" })?.recordCount ?? 0
-                syncState.updateCategory("cat_workout_routes", status: .completed, recordCount: existingRoutes + routeCount, lastSyncDate: Date())
-                syncState.incrementalCursors["cat_workout_routes"] = Date()
-                syncState.persist()
-                total += routeCount
-                updateLiveActivity(phase: "Workout Routes", operation: "Synced Workout Routes (\(routeCount) records)", records: total)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
-                    hkInaccessibleCount += 1
-                } else {
-                    failedCategories.append("Workout Routes")
-                    syncState.updateCategory("cat_workout_routes", status: .failed(error.localizedDescription), lastSyncDate: Date())
-                }
-            }
-
-            try Task.checkCancellation()
-            syncState.updateCategory("cat_medications", status: .syncing)
-            do {
-                var m = try await liveMySQL()
-                let medsQuerySince = querySince(for: "cat_medications")
-                let medCount: Int
-                do {
-                    medCount = try await syncMedications(mysql: m, since: medsQuerySince)
-                } catch where SyncService.isConnectionError(error) {
-                    m = try await liveMySQL()
-                    medCount = try await syncMedications(mysql: m, since: medsQuerySince)
-                }
-                let existingMeds = syncState.categories.first(where: { $0.id == "cat_medications" })?.recordCount ?? 0
-                syncState.updateCategory("cat_medications", status: .completed, recordCount: existingMeds + medCount, lastSyncDate: Date())
-                syncState.incrementalCursors["cat_medications"] = Date()
-                syncState.persist()
-                total += medCount
-                updateLiveActivity(phase: "Medications", operation: "Synced Medications (\(medCount) records)", records: total)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
-                    hkInaccessibleCount += 1
-                } else {
-                    failedCategories.append("Medications")
-                    syncState.updateCategory("cat_medications", status: .failed(error.localizedDescription), lastSyncDate: Date())
-                }
-            }
-
-            try Task.checkCancellation()
-            syncState.updateCategory("cat_vision", status: .syncing)
-            do {
-                var m = try await liveMySQL()
-                let visionQuerySince = querySince(for: "cat_vision")
-                let visionCount: Int
-                do {
-                    visionCount = try await syncVisionPrescriptions(mysql: m, since: visionQuerySince)
-                } catch where SyncService.isConnectionError(error) {
-                    m = try await liveMySQL()
-                    visionCount = try await syncVisionPrescriptions(mysql: m, since: visionQuerySince)
-                }
-                let existingVision = syncState.categories.first(where: { $0.id == "cat_vision" })?.recordCount ?? 0
-                syncState.updateCategory("cat_vision", status: .completed, recordCount: existingVision + visionCount, lastSyncDate: Date())
-                syncState.incrementalCursors["cat_vision"] = Date()
-                syncState.persist()
-                total += visionCount
-                updateLiveActivity(phase: "Vision", operation: "Synced Vision Prescriptions (\(visionCount) records)", records: total)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
-                    hkInaccessibleCount += 1
-                } else {
-                    failedCategories.append("Vision Prescriptions")
-                    syncState.updateCategory("cat_vision", status: .failed(error.localizedDescription), lastSyncDate: Date())
-                }
-            }
-
-            try Task.checkCancellation()
-            syncState.updateCategory("cat_state_of_mind", status: .syncing)
-            do {
-                var m = try await liveMySQL()
-                let somQuerySince = querySince(for: "cat_state_of_mind")
-                let somCount: Int
-                do {
-                    somCount = try await syncStateOfMind(mysql: m, since: somQuerySince)
-                } catch where SyncService.isConnectionError(error) {
-                    m = try await liveMySQL()
-                    somCount = try await syncStateOfMind(mysql: m, since: somQuerySince)
-                }
-                let existingSOM = syncState.categories.first(where: { $0.id == "cat_state_of_mind" })?.recordCount ?? 0
-                syncState.updateCategory("cat_state_of_mind", status: .completed, recordCount: existingSOM + somCount, lastSyncDate: Date())
-                syncState.incrementalCursors["cat_state_of_mind"] = Date()
-                syncState.persist()
-                total += somCount
-                updateLiveActivity(phase: "State of Mind", operation: "Synced State of Mind (\(somCount) records)", records: total)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
-                    hkInaccessibleCount += 1
-                } else {
-                    failedCategories.append("State of Mind")
-                    syncState.updateCategory("cat_state_of_mind", status: .failed(error.localizedDescription), lastSyncDate: Date())
+                case .special(let specialID):
+                    let specialQuerySince = querySince(for: specialID)
+                    do {
+                        let count = try await syncSpecialCategory(
+                            id: specialID, querySince: specialQuerySince, liveMySQL: liveMySQL)
+                        let existing = syncState.categories.first(where: { $0.id == specialID })?.recordCount ?? 0
+                        syncState.updateCategory(specialID, status: .completed, recordCount: existing + count, lastSyncDate: Date())
+                        syncState.incrementalCursors[specialID] = Date()
+                        syncState.persist()
+                        total += count
+                        updateLiveActivity(phase: unit.displayLabel, operation: "Synced \(unit.displayLabel) (\(count) records)", records: total)
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
+                            hkInaccessibleCount += 1
+                        } else {
+                            failedCategories.append(unit.displayLabel)
+                            syncState.updateCategory(specialID, status: .failed(error.localizedDescription), lastSyncDate: Date())
+                        }
+                    }
                 }
             }
 
@@ -1170,28 +1089,107 @@ final class SyncService: ObservableObject {
                 print("[SyncService] Incremental sync completed: \(total) records, \(failedCategories.count) failed categories, \(hkInaccessibleCount) HK-inaccessible")
                 try await completeSyncLog(mysql: finalMySQL, id: logID, count: total)
             }
+            if forceDeepSweep {
+                SyncService.lastDeepSweepDate = Date()
+            }
             syncState.lastSyncDate = Date()
             syncState.currentOperation = "Incremental sync done (\(total) records)"
-            if !isBackgroundSync { syncState.persist() }
+            syncState.persist()
             endLiveActivity(totalRecords: total)
             disconnectMySQL()
 
         } catch is CancellationError {
-            if let m = self.mysql, logID != 0 { await failSyncLog(mysql: m, id: logID, message: "Sync cancelled") }
+            // If some records were synced before cancellation, complete the log (data is valid)
+            if total > 0, logID != 0, let m = self.mysql {
+                try? await completeSyncLog(mysql: m, id: logID, count: total)
+            } else if let m = self.mysql, logID != 0 {
+                await failSyncLog(mysql: m, id: logID, message: "Sync cancelled")
+            }
             disconnectMySQL()
-            endLiveActivity(totalRecords: 0)
-            syncState.currentOperation = "Sync cancelled"
-            if !isBackgroundSync { syncState.persist() }
+            endLiveActivity(totalRecords: total)
+            syncState.currentOperation = total > 0
+                ? "Sync cancelled after \(total) records"
+                : "Sync cancelled"
+            syncState.persist()
         } catch {
             if let m = self.mysql, logID != 0 { await failSyncLog(mysql: m, id: logID, message: error.localizedDescription) }
             disconnectMySQL()
             endLiveActivity(totalRecords: 0)
             syncState.errorMessage = error.localizedDescription
             syncState.currentOperation = ""
-            if !isBackgroundSync { syncState.persist() }
+            syncState.persist()
         }
 
         syncState.isIncrementalSyncRunning = false
+    }
+
+    /// Routes a special category ID to its dedicated sync method with connection-error retry.
+    private func syncSpecialCategory(
+        id: String,
+        querySince: Date,
+        liveMySQL: @MainActor () async throws -> MySQLService
+    ) async throws -> Int {
+        var m = try await liveMySQL()
+        let count: Int
+        switch id {
+        case "cat_workouts":
+            do { count = try await syncWorkouts(mysql: m, since: querySince) }
+            catch where SyncService.isConnectionError(error) {
+                m = try await liveMySQL()
+                count = try await syncWorkouts(mysql: m, since: querySince)
+            }
+        case "cat_bp":
+            do { count = try await syncBloodPressure(mysql: m, since: querySince) }
+            catch where SyncService.isConnectionError(error) {
+                m = try await liveMySQL()
+                count = try await syncBloodPressure(mysql: m, since: querySince)
+            }
+        case "cat_ecg":
+            do { count = try await syncECG(mysql: m, since: querySince) }
+            catch where SyncService.isConnectionError(error) {
+                m = try await liveMySQL()
+                count = try await syncECG(mysql: m, since: querySince)
+            }
+        case "cat_audiogram":
+            do { count = try await syncAudiograms(mysql: m, since: querySince) }
+            catch where SyncService.isConnectionError(error) {
+                m = try await liveMySQL()
+                count = try await syncAudiograms(mysql: m, since: querySince)
+            }
+        case "cat_activity_summaries":
+            do { count = try await syncActivitySummaries(mysql: m, since: querySince) }
+            catch where SyncService.isConnectionError(error) {
+                m = try await liveMySQL()
+                count = try await syncActivitySummaries(mysql: m, since: querySince)
+            }
+        case "cat_workout_routes":
+            do { count = try await syncWorkoutRoutes(mysql: m, since: querySince) }
+            catch where SyncService.isConnectionError(error) {
+                m = try await liveMySQL()
+                count = try await syncWorkoutRoutes(mysql: m, since: querySince)
+            }
+        case "cat_medications":
+            do { count = try await syncMedications(mysql: m, since: querySince) }
+            catch where SyncService.isConnectionError(error) {
+                m = try await liveMySQL()
+                count = try await syncMedications(mysql: m, since: querySince)
+            }
+        case "cat_vision":
+            do { count = try await syncVisionPrescriptions(mysql: m, since: querySince) }
+            catch where SyncService.isConnectionError(error) {
+                m = try await liveMySQL()
+                count = try await syncVisionPrescriptions(mysql: m, since: querySince)
+            }
+        case "cat_state_of_mind":
+            do { count = try await syncStateOfMind(mysql: m, since: querySince) }
+            catch where SyncService.isConnectionError(error) {
+                m = try await liveMySQL()
+                count = try await syncStateOfMind(mysql: m, since: querySince)
+            }
+        default:
+            count = 0
+        }
+        return count
     }
 
     // MARK: - Targeted sync (observer-triggered, single/few categories)
@@ -1202,8 +1200,12 @@ final class SyncService: ObservableObject {
         guard !syncState.isAnySyncRunning else { return }
         syncState.isIncrementalSyncRunning = true
         SyncService.isSyncRunning = true
-        defer { SyncService.isSyncRunning = false }
+        defer {
+            SyncService.isSyncRunning = false
+            syncState.currentSyncCategoryIDs = []
+        }
         syncState.errorMessage = nil
+        syncState.currentSyncCategoryIDs = categoryIDs
 
         do {
             if isBackgroundSync {
@@ -1223,11 +1225,12 @@ final class SyncService: ObservableObject {
             let distantPast = Calendar.current.date(from: DateComponents(year: 2000, month: 1, day: 1))!
             let globalQuerySince = lastSync.map { $0.addingTimeInterval(-7 * 24 * 3600) } ?? distantPast
 
+            // Targeted syncs are observer-triggered (new data arrived), so use adaptive
+            // lookback with deep sweep forced — we want the full 7-day window here since
+            // the observer fired because HealthKit has new/changed samples.
             let cursors = syncState.incrementalCursors
             func querySince(for key: String) -> Date {
-                guard let cursor = cursors[key] else { return globalQuerySince }
-                let effective = max(cursor, lastSync ?? distantPast)
-                return effective.addingTimeInterval(-7 * 24 * 3600)
+                adaptiveQuerySince(for: key, cursors: cursors, globalQuerySince: globalQuerySince, lastSync: lastSync, forceDeepSweep: true)
             }
 
             @MainActor func liveMySQL() async throws -> MySQLService {

@@ -17,13 +17,16 @@ struct HealthBeatApp: App {
 
 // MARK: - AppDelegate
 
-final class AppDelegate: NSObject, UIApplicationDelegate {
+final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
 
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        UserDefaults.standard.register(defaults: ["backgroundSyncEnabled": true])
+        UserDefaults.standard.register(defaults: [
+            "backgroundSyncEnabled": true,
+            "syncReminderFrequency": "daily"
+        ])
         Task { @MainActor in iCloudSyncService.shared.start() }
         registerBackgroundTasks()
         if launchOptions?[.location] != nil {
@@ -32,7 +35,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         LocationService.shared.reloadAndStart()
 
         // Request notification permission for sync failure alerts
+        UNUserNotificationCenter.current().delegate = self
         BackgroundSyncManager.requestNotificationPermission()
+        BackgroundSyncManager.scheduleSyncReminder()
 
         // Start HKObserverQuery-based background delivery for continuous HealthKit sync.
         // When new health data is written, HealthKit wakes the app and triggers an incremental sync.
@@ -54,6 +59,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         }
 
         return true
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        if response.notification.request.identifier == "sync-reminder" {
+            NotificationCenter.default.post(name: .healthBeatSyncReminderTapped, object: nil)
+        }
+        completionHandler()
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {

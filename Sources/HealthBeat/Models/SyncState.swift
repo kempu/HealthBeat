@@ -81,6 +81,7 @@ class SyncState: ObservableObject {
     @Published var backfillCursors: [String: Date] = [:]
     @Published var backfillAnchorDate: Date?
     @Published var incrementalCursors: [String: Date] = [:]
+    @Published var currentSyncCategoryIDs: Set<String> = []
 
     var isAnySyncRunning: Bool { isFullSyncRunning || isIncrementalSyncRunning }
 
@@ -149,16 +150,30 @@ class SyncState: ObservableObject {
     }
 
     func recalcOverall() {
-        let total = Double(categories.count)
-        guard total > 0 else {
-            overallProgress = 0
-            return
+        if !currentSyncCategoryIDs.isEmpty {
+            let syncCats = categories.filter { currentSyncCategoryIDs.contains($0.id) }
+            let total = Double(syncCats.count)
+            guard total > 0 else {
+                overallProgress = 0
+                return
+            }
+            let completed = Double(syncCats.filter {
+                if case .completed = $0.status { return true }
+                if case .failed = $0.status { return true }
+                return false
+            }.count)
+            let syncingProgress = syncCats.filter { $0.status.isActive }.map { $0.progressFraction }.reduce(0, +)
+            overallProgress = (completed + syncingProgress) / total
+        } else {
+            let total = Double(categories.count)
+            guard total > 0 else {
+                overallProgress = 0
+                return
+            }
+            let completedCount = Double(categories.filter { $0.status == .completed }.count)
+            let syncingProgress = categories.filter { $0.status.isActive }.map { $0.progressFraction }.reduce(0, +)
+            overallProgress = (completedCount + syncingProgress) / total
         }
-        let completedCount = Double(categories.filter { $0.status == .completed }.count)
-        let syncingProgress = categories.filter { $0.status.isActive }.map { $0.progressFraction }.reduce(0, +)
-        overallProgress = (completedCount + syncingProgress) / total
-        // totalRecords is not summed from per-category session counts here —
-        // it is set directly from actual DB COUNT(*) queries in refreshRecordCounts().
     }
 
     // MARK: - Persistence

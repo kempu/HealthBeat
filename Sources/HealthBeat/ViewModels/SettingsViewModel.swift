@@ -5,6 +5,7 @@ import UIKit
 
 extension Notification.Name {
     static let healthBeatDatabaseDidReset = Notification.Name("com.healthbeat.databaseDidReset")
+    static let healthBeatSyncReminderTapped = Notification.Name("healthBeatSyncReminderTapped")
 }
 
 enum ConnectionTestState: Equatable {

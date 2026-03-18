@@ -308,4 +308,35 @@ final class BackgroundSyncManager {
             }
         }
     }
+
+    /// Schedule or reschedule the sync reminder notification based on the user's preference.
+    static func scheduleSyncReminder() {
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: ["sync-reminder"])
+
+        let frequency = UserDefaults.standard.string(forKey: "syncReminderFrequency") ?? "daily"
+        guard frequency != "off" else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "Health Beat Sync Reminder"
+        content.body = "Open Health Beat to sync your latest health data. Apple Health is only accessible when the screen is unlocked."
+        content.sound = .default
+        content.categoryIdentifier = "sync-reminder"
+
+        var dateComponents = DateComponents()
+        dateComponents.hour = 20
+        dateComponents.minute = 0
+        if frequency == "weekly" {
+            dateComponents.weekday = 2 // Monday
+        }
+
+        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
+        let request = UNNotificationRequest(identifier: "sync-reminder", content: content, trigger: trigger)
+
+        center.add(request) { error in
+            if let error = error {
+                print("[BackgroundSyncManager] Failed to schedule sync reminder: \(error.localizedDescription)")
+            }
+        }
+    }
 }
