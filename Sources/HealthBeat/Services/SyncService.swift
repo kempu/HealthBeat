@@ -1088,6 +1088,18 @@ final class SyncService: ObservableObject {
                 syncState.errorMessage = "Sync completed with errors in: \(failedCategories.joined(separator: ", "))"
             }
 
+            // Two-way place category + geofence definition sync
+            do {
+                let geoMySQL = try await liveMySQL()
+                try await GeofenceSyncService.syncPlaceCategories(mysql: geoMySQL)
+                let geofencesChanged = try await GeofenceSyncService.syncGeofences(mysql: geoMySQL)
+                if geofencesChanged {
+                    LocationService.shared.updateGeofences(GeoFence.loadAll())
+                }
+            } catch {
+                print("[SyncService] Geofence sync failed: \(error)")
+            }
+
             let finalMySQL = try await liveMySQL()
 
             // If HealthKit was inaccessible (device locked) and no records were synced,
@@ -1424,6 +1436,18 @@ final class SyncService: ObservableObject {
                 }
                 catch is CancellationError { throw CancellationError() }
                 catch {}
+            }
+
+            // Two-way place category + geofence definition sync
+            do {
+                let geoMySQL = try await liveMySQL()
+                try await GeofenceSyncService.syncPlaceCategories(mysql: geoMySQL)
+                let geofencesChanged = try await GeofenceSyncService.syncGeofences(mysql: geoMySQL)
+                if geofencesChanged {
+                    LocationService.shared.updateGeofences(GeoFence.loadAll())
+                }
+            } catch {
+                print("[SyncService] Geofence sync failed: \(error)")
             }
 
             print("[SyncService] Targeted sync completed: \(total) records, \(hkInaccessibleCount) HK-inaccessible")

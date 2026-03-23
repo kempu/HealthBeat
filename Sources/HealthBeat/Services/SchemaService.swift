@@ -218,7 +218,7 @@ struct SchemaService {
     // MARK: - Schema versioning & migrations
 
     /// Current schema version. Bump this when adding new migrations.
-    static let currentSchemaVersion = 5
+    static let currentSchemaVersion = 6
 
     /// Migrations keyed by target version. Each entry contains ALTER statements
     /// to upgrade from the previous version.
@@ -264,6 +264,39 @@ struct SchemaService {
             // (used by refreshRecordCounts and data validation) are fast on large tables.
             // Error 1061 (duplicate key name) is benign — index already exists.
             "ALTER TABLE health_quantity_samples ADD INDEX idx_hqs_type (type)",
+        ],
+        6: [
+            // v6: Two-way sync tables for place categories and geofence definitions.
+            """
+            CREATE TABLE IF NOT EXISTS place_category_definitions (
+              id                VARCHAR(36) PRIMARY KEY,
+              name              VARCHAR(255) NOT NULL,
+              system_image      VARCHAR(255) NOT NULL,
+              sort_order        INT NOT NULL DEFAULT 0,
+              origin            ENUM('app','database') NOT NULL DEFAULT 'app',
+              is_deleted        TINYINT(1) NOT NULL DEFAULT 0,
+              created_at        DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+              updated_at        DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+              INDEX idx_updated_at (updated_at),
+              INDEX idx_is_deleted (is_deleted)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS geofence_definitions (
+              id                VARCHAR(36) PRIMARY KEY,
+              name              VARCHAR(255) NOT NULL,
+              latitude          DOUBLE NOT NULL,
+              longitude         DOUBLE NOT NULL,
+              radius            DOUBLE NOT NULL,
+              place_category_id VARCHAR(36),
+              origin            ENUM('app','database') NOT NULL DEFAULT 'app',
+              is_deleted        TINYINT(1) NOT NULL DEFAULT 0,
+              created_at        DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+              updated_at        DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+              INDEX idx_updated_at (updated_at),
+              INDEX idx_is_deleted (is_deleted)
+            )
+            """,
         ],
     ]
 
@@ -427,6 +460,8 @@ struct SchemaService {
             "health_state_of_mind",
             "location_tracks",
             "location_geofence_events",
+            "place_category_definitions",
+            "geofence_definitions",
         ]
         var counts: [String: Int] = [:]
         for table in tables {
