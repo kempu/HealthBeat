@@ -34,8 +34,16 @@ struct PlaceCategoriesView: View {
 
             Section {
                 Button("Reset to Defaults") {
-                    categories = PlaceCategory.defaults
-                    PlaceCategory.saveAll(categories)
+                    // Soft-delete all existing, then add defaults
+                    var allCategories = PlaceCategory.loadAllIncludingDeleted()
+                    let now = Date()
+                    for i in allCategories.indices where !allCategories[i].isDeleted {
+                        allCategories[i].isDeleted = true
+                        allCategories[i].updatedAt = now
+                    }
+                    allCategories.append(contentsOf: PlaceCategory.defaults)
+                    PlaceCategory.saveAll(allCategories)
+                    categories = PlaceCategory.loadAll()
                 }
                 .foregroundStyle(.red)
             }
@@ -52,28 +60,51 @@ struct PlaceCategoriesView: View {
         }
         .sheet(isPresented: $showAddSheet) {
             PlaceCategoryEditSheet(mode: .add) { newCat in
-                categories.append(newCat)
-                PlaceCategory.saveAll(categories)
+                var allCategories = PlaceCategory.loadAllIncludingDeleted()
+                allCategories.append(newCat)
+                PlaceCategory.saveAll(allCategories)
+                categories = PlaceCategory.loadAll()
             }
         }
         .sheet(item: $editingCategory) { cat in
             PlaceCategoryEditSheet(mode: .edit(cat)) { updated in
-                if let idx = categories.firstIndex(where: { $0.id == updated.id }) {
-                    categories[idx] = updated
-                    PlaceCategory.saveAll(categories)
+                var allCategories = PlaceCategory.loadAllIncludingDeleted()
+                if let idx = allCategories.firstIndex(where: { $0.id == updated.id }) {
+                    var stamped = updated
+                    stamped.updatedAt = Date()
+                    allCategories[idx] = stamped
+                    PlaceCategory.saveAll(allCategories)
+                    categories = PlaceCategory.loadAll()
                 }
             }
         }
     }
 
     private func deleteCategories(at offsets: IndexSet) {
-        categories.remove(atOffsets: offsets)
-        PlaceCategory.saveAll(categories)
+        // Soft-delete: mark as deleted and stamp updatedAt
+        var allCategories = PlaceCategory.loadAllIncludingDeleted()
+        for offset in offsets {
+            let catToDelete = categories[offset]
+            if let idx = allCategories.firstIndex(where: { $0.id == catToDelete.id }) {
+                allCategories[idx].isDeleted = true
+                allCategories[idx].updatedAt = Date()
+            }
+        }
+        PlaceCategory.saveAll(allCategories)
+        categories = PlaceCategory.loadAll()
     }
 
     private func moveCategories(from source: IndexSet, to destination: Int) {
         categories.move(fromOffsets: source, toOffset: destination)
-        PlaceCategory.saveAll(categories)
+        // Rebuild full list: replace non-deleted entries with reordered visible ones, stamp updatedAt
+        var allCategories = PlaceCategory.loadAllIncludingDeleted().filter { $0.isDeleted }
+        let now = Date()
+        var reordered = categories
+        for i in reordered.indices {
+            reordered[i].updatedAt = now
+        }
+        allCategories.append(contentsOf: reordered)
+        PlaceCategory.saveAll(allCategories)
     }
 }
 

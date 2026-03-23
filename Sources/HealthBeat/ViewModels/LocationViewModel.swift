@@ -34,21 +34,37 @@ final class LocationViewModel: ObservableObject {
     }
 
     func addGeofence(_ fence: GeoFence) {
-        geofences.append(fence)
-        GeoFence.saveAll(geofences)
+        var allFences = GeoFence.loadAllIncludingDeleted()
+        allFences.append(fence)
+        GeoFence.saveAll(allFences)
+        geofences = GeoFence.loadAll()
         LocationService.shared.updateGeofences(geofences)
     }
 
     func deleteGeofence(at offsets: IndexSet) {
-        geofences.remove(atOffsets: offsets)
-        GeoFence.saveAll(geofences)
+        // Soft-delete: mark as deleted and stamp updatedAt
+        var allFences = GeoFence.loadAllIncludingDeleted()
+        let visibleFences = geofences
+        for offset in offsets {
+            let fenceToDelete = visibleFences[offset]
+            if let idx = allFences.firstIndex(where: { $0.id == fenceToDelete.id }) {
+                allFences[idx].isDeleted = true
+                allFences[idx].updatedAt = Date()
+            }
+        }
+        GeoFence.saveAll(allFences)
+        geofences = GeoFence.loadAll()
         LocationService.shared.updateGeofences(geofences)
     }
 
     func updateGeofence(_ fence: GeoFence) {
-        if let idx = geofences.firstIndex(where: { $0.id == fence.id }) {
-            geofences[idx] = fence
-            GeoFence.saveAll(geofences)
+        var allFences = GeoFence.loadAllIncludingDeleted()
+        if let idx = allFences.firstIndex(where: { $0.id == fence.id }) {
+            var updated = fence
+            updated.updatedAt = Date()
+            allFences[idx] = updated
+            GeoFence.saveAll(allFences)
+            geofences = GeoFence.loadAll()
             LocationService.shared.updateGeofences(geofences)
         }
     }
