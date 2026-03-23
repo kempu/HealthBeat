@@ -610,6 +610,20 @@ final class SyncService: ObservableObject {
                 updateLiveActivity(phase: displayName, operation: "Backfilled \(displayName) (\(count.formatted()) records)", records: count)
             }
 
+            // Two-way place category + geofence definition sync
+            do {
+                try await ensureMySQLConnected(config: config)
+                if let geoMySQL = self.mysql {
+                    try await GeofenceSyncService.syncPlaceCategories(mysql: geoMySQL)
+                    let geofencesChanged = try await GeofenceSyncService.syncGeofences(mysql: geoMySQL)
+                    if geofencesChanged {
+                        LocationService.shared.updateGeofences(GeoFence.loadAll())
+                    }
+                }
+            } catch {
+                print("[SyncService] Geofence sync failed: \(error)")
+            }
+
             // Mark complete. Keep backfillCursors (all at anchor) and backfillAnchorDate so
             // the next Full Sync press detects "allComplete" and re-syncs only the 7-day
             // lookback window rather than re-scanning from epoch.
