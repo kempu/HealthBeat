@@ -614,10 +614,13 @@ final class SyncService: ObservableObject {
             do {
                 try await ensureMySQLConnected(config: config)
                 if let geoMySQL = self.mysql {
-                    try await GeofenceSyncService.syncPlaceCategories(mysql: geoMySQL)
+                    do { try await GeofenceSyncService.syncPlaceCategories(mysql: geoMySQL) }
+                    catch { print("[SyncService] Place category sync failed: \(error)") }
+
                     let geofencesChanged = try await GeofenceSyncService.syncGeofences(mysql: geoMySQL)
                     if geofencesChanged {
                         LocationService.shared.updateGeofences(GeoFence.loadAll())
+                        NotificationCenter.default.post(name: .geofencesDidSync, object: nil)
                     }
                 }
             } catch {
@@ -675,7 +678,9 @@ final class SyncService: ObservableObject {
             return
         }
         do {
-            try await mysql!.execute("SELECT 1")
+            // Use `query` (not `execute`) because SELECT returns a result set.
+            // `execute` only reads one packet, leaving stale data in the buffer.
+            _ = try await mysql!.query("SELECT 1")
         } catch {
             disconnectMySQL()
             try await connectMySQL(config: config)
@@ -1105,10 +1110,13 @@ final class SyncService: ObservableObject {
             // Two-way place category + geofence definition sync
             do {
                 let geoMySQL = try await liveMySQL()
-                try await GeofenceSyncService.syncPlaceCategories(mysql: geoMySQL)
+                do { try await GeofenceSyncService.syncPlaceCategories(mysql: geoMySQL) }
+                catch { print("[SyncService] Place category sync failed: \(error)") }
+
                 let geofencesChanged = try await GeofenceSyncService.syncGeofences(mysql: geoMySQL)
                 if geofencesChanged {
                     LocationService.shared.updateGeofences(GeoFence.loadAll())
+                    NotificationCenter.default.post(name: .geofencesDidSync, object: nil)
                 }
             } catch {
                 print("[SyncService] Geofence sync failed: \(error)")
@@ -1455,10 +1463,13 @@ final class SyncService: ObservableObject {
             // Two-way place category + geofence definition sync
             do {
                 let geoMySQL = try await liveMySQL()
-                try await GeofenceSyncService.syncPlaceCategories(mysql: geoMySQL)
+                do { try await GeofenceSyncService.syncPlaceCategories(mysql: geoMySQL) }
+                catch { print("[SyncService] Place category sync failed: \(error)") }
+
                 let geofencesChanged = try await GeofenceSyncService.syncGeofences(mysql: geoMySQL)
                 if geofencesChanged {
                     LocationService.shared.updateGeofences(GeoFence.loadAll())
+                    NotificationCenter.default.post(name: .geofencesDidSync, object: nil)
                 }
             } catch {
                 print("[SyncService] Geofence sync failed: \(error)")

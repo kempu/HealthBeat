@@ -82,8 +82,11 @@ struct GeoFence: Codable, Identifiable, Equatable {
     }
 
     static func saveAll(_ fences: [GeoFence]) {
-        if let data = try? JSONEncoder().encode(fences) {
+        do {
+            let data = try JSONEncoder().encode(fences)
             UserDefaults.standard.set(data, forKey: userDefaultsKey)
+        } catch {
+            print("[GeoFence] saveAll encode failed: \(error)")
         }
         Task { @MainActor in iCloudSyncService.shared.pushGeofences(fences) }
     }

@@ -64,6 +64,7 @@
 		AABB0000000000000002003B /* DataValidationViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001003A /* DataValidationViewModel.swift */; };
 		AABB0000000000000002003C /* DataValidationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001003B /* DataValidationView.swift */; };
 		AABB0000000000000002003D /* BrandFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001003C /* BrandFooter.swift */; };
+		AABB0000000000000002003E /* GeofenceSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001003D /* GeofenceSyncService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -151,6 +152,7 @@
 		AABB0000000000000001003A /* DataValidationViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataValidationViewModel.swift; sourceTree = "<group>"; };
 		AABB0000000000000001003B /* DataValidationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataValidationView.swift; sourceTree = "<group>"; };
 		AABB0000000000000001003C /* BrandFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandFooter.swift; sourceTree = "<group>"; };
+		AABB0000000000000001003D /* GeofenceSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeofenceSyncService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -229,6 +231,7 @@
 				AABB00000000000000010030 /* BackupManager.swift */,
 				AABB00000000000000010035 /* BackgroundSyncManager.swift */,
 				AABB00000000000000010036 /* iCloudSyncService.swift */,
+				AABB0000000000000001003D /* GeofenceSyncService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -486,6 +489,7 @@
 				AABB00000000000000020036 /* BackgroundSyncManager.swift in Sources */,
 				AABB00000000000000020037 /* iCloudSyncService.swift in Sources */,
 				AABB00000000000000020038 /* iCloudSyncSettingsView.swift in Sources */,
+				AABB0000000000000002003E /* GeofenceSyncService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -25,6 +25,13 @@ final class LocationViewModel: ObservableObject {
                 self?.geofences = GeoFence.loadAll()
             }
             .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .geofencesDidSync)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.geofences = GeoFence.loadAll()
+            }
+            .store(in: &cancellables)
     }
 
     func toggleTracking() {

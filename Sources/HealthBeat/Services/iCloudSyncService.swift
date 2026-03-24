@@ -311,4 +311,5 @@ final class iCloudSyncService: ObservableObject {
 
 extension Notification.Name {
     static let iCloudSettingsDidChange = Notification.Name("iCloudSettingsDidChange")
+    static let geofencesDidSync = Notification.Name("geofencesDidSync")
 }

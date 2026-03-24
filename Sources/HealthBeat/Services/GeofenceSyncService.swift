@@ -14,14 +14,17 @@ private func sqlDate(_ date: Date) -> String {
     geoSqlDateFormatter.string(from: date)
 }
 
+private let geoSqlDateFormatterNoFrac: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    f.timeZone = TimeZone(identifier: "UTC")
+    f.locale = Locale(identifier: "en_US_POSIX")
+    return f
+}()
+
 private func parseDate(_ str: String) -> Date? {
-    geoSqlDateFormatter.date(from: str)
+    geoSqlDateFormatter.date(from: str) ?? geoSqlDateFormatterNoFrac.date(from: str)
 }
-
-// MARK: - Cursor keys
-
-private let placeCategoryCursorKey = "place_category_sync_cursor"
-private let geofenceCursorKey = "geofence_sync_cursor"
 
 // MARK: - GeofenceSyncService
 
@@ -31,15 +34,14 @@ enum GeofenceSyncService {
     /// since geofences reference categories via `place_category_id`.
     @discardableResult
     static func syncPlaceCategories(mysql: MySQLService) async throws -> Bool {
-        let cursor = loadCursor(key: placeCategoryCursorKey)
         var localCategories = PlaceCategory.loadAllIncludingDeleted()
         let localById = Dictionary(localCategories.map { ($0.id, $0) }, uniquingKeysWith: { _, b in b })
         var changed = false
 
-        // Step 1: Pull remote changes
-        let cursorStr = cursor.map { MySQLEscape.quote(sqlDate($0)) } ?? "'1970-01-01 00:00:00.000'"
+        // Step 1: Pull all remote place categories (small dataset, full merge every sync
+        // avoids cursor/timezone mismatch between device time and MySQL server time)
         let rows = try await mysql.query(
-            "SELECT id, name, system_image, sort_order, origin, is_deleted, created_at, updated_at FROM place_category_definitions WHERE updated_at > \(cursorStr)"
+            "SELECT id, name, system_image, sort_order, origin, is_deleted, created_at, updated_at FROM place_category_definitions"
         )
 
         for row in rows {
@@ -82,14 +84,8 @@ enum GeofenceSyncService {
             // If no local match and is_deleted = true, skip
         }
 
-        // Step 2: Push local changes
-        let categoriesToPush: [PlaceCategory]
-        if let c = cursor {
-            categoriesToPush = localCategories.filter { $0.updatedAt > c }
-        } else {
-            // First sync — push everything
-            categoriesToPush = localCategories
-        }
+        // Step 2: Push all local categories (idempotent via ON DUPLICATE KEY UPDATE)
+        let categoriesToPush = localCategories
 
         for cat in categoriesToPush {
             let id = MySQLEscape.quote(cat.id.uuidString)
@@ -125,23 +121,30 @@ enum GeofenceSyncService {
         if changed || !categoriesToPush.isEmpty {
             PlaceCategory.saveAll(localCategories)
         }
-        saveCursor(key: placeCategoryCursorKey, date: Date())
 
         return changed
     }
 
     /// Two-way sync of geofence definitions. Returns true if local geofences were modified.
     static func syncGeofences(mysql: MySQLService) async throws -> Bool {
-        let cursor = loadCursor(key: geofenceCursorKey)
         var localFences = GeoFence.loadAllIncludingDeleted()
         let localById = Dictionary(localFences.map { ($0.id, $0) }, uniquingKeysWith: { _, b in b })
         var changed = false
 
-        // Step 1: Pull remote changes
-        let cursorStr = cursor.map { MySQLEscape.quote(sqlDate($0)) } ?? "'1970-01-01 00:00:00.000'"
+        // Diagnostic: verify which database and table we're reading from
+        let dbRows = try await mysql.query("SELECT DATABASE() as db")
+        let currentDB = dbRows.first?["db"] ?? "unknown"
+        let countRows = try await mysql.query("SELECT COUNT(*) as cnt FROM geofence_definitions")
+        let serverCount = countRows.first?["cnt"] ?? "?"
+        print("[GeofenceSyncService] Connected to database: '\(currentDB)', server row count: \(serverCount)")
+
+        // Step 1: Pull all remote geofences (small dataset, full merge every sync
+        // avoids cursor/timezone mismatch between device time and MySQL server time)
         let rows = try await mysql.query(
-            "SELECT id, name, latitude, longitude, radius, place_category_id, origin, is_deleted, created_at, updated_at FROM geofence_definitions WHERE updated_at > \(cursorStr)"
+            "SELECT id, name, latitude, longitude, radius, place_category_id, origin, is_deleted, created_at, updated_at FROM geofence_definitions"
         )
+
+        print("[GeofenceSyncService] Pulled \(rows.count) geofence row(s) from DB, \(localFences.count) local fence(s)")
 
         for row in rows {
             guard let idStr = row["id"], let remoteId = UUID(uuidString: idStr),
@@ -152,7 +155,10 @@ enum GeofenceSyncService {
                   let originStr = row["origin"],
                   let isDeletedStr = row["is_deleted"],
                   let updatedAtStr = row["updated_at"], let remoteUpdatedAt = parseDate(updatedAtStr)
-            else { continue }
+            else {
+                print("[GeofenceSyncService] Skipping unparseable row: \(row)")
+                continue
+            }
 
             let remoteOrigin = GeoFence.SyncOrigin(rawValue: originStr) ?? .database
             let remoteIsDeleted = isDeletedStr == "1"
@@ -188,13 +194,8 @@ enum GeofenceSyncService {
             }
         }
 
-        // Step 2: Push local changes
-        let fencesToPush: [GeoFence]
-        if let c = cursor {
-            fencesToPush = localFences.filter { $0.updatedAt > c }
-        } else {
-            fencesToPush = localFences
-        }
+        // Step 2: Push all local geofences (idempotent via ON DUPLICATE KEY UPDATE)
+        let fencesToPush = localFences
 
         for fence in fencesToPush {
             let id = MySQLEscape.quote(fence.id.uuidString)
@@ -234,18 +235,10 @@ enum GeofenceSyncService {
         if changed || !fencesToPush.isEmpty {
             GeoFence.saveAll(localFences)
         }
-        saveCursor(key: geofenceCursorKey, date: Date())
+
+        let activeCount = localFences.filter { !$0.isDeleted }.count
+        print("[GeofenceSyncService] Sync done: changed=\(changed), pushed=\(fencesToPush.count), active=\(activeCount)")
 
         return changed
-    }
-
-    // MARK: - Cursor persistence
-
-    private static func loadCursor(key: String) -> Date? {
-        UserDefaults.standard.object(forKey: key) as? Date
-    }
-
-    private static func saveCursor(key: String, date: Date) {
-        UserDefaults.standard.set(date, forKey: key)
     }
 }

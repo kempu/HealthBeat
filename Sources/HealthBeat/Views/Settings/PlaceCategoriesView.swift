@@ -53,6 +53,9 @@ struct PlaceCategoriesView: View {
         .onReceive(NotificationCenter.default.publisher(for: .iCloudSettingsDidChange)) { _ in
             categories = PlaceCategory.loadAll()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .geofencesDidSync)) { _ in
+            categories = PlaceCategory.loadAll()
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 EditButton()
