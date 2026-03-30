@@ -1736,11 +1736,55 @@ final class SyncService: ObservableObject {
         return sqlDateFormatter.date(from: dateStr)
     }
 
+    // MARK: - Stale record reconciliation
+
+    // Deletes database rows whose UUIDs no longer exist in HealthKit for a given
+    // table, type, and date range. This handles samples that were deleted or replaced
+    // in HealthKit (e.g. a third-party app editing an entry creates a new UUID and
+    // deletes the old one). Returns the number of stale rows removed.
+    private func reconcileStaleRecords(
+        table: String,
+        typeColumn: String?,
+        typeName: String?,
+        since: Date,
+        until: Date,
+        validUUIDs: [String],
+        mysql: MySQLService
+    ) async throws -> Int {
+        guard !validUUIDs.isEmpty else { return 0 }
+
+        let sinceStr = MySQLEscape.quote(sqlDate(since))
+        let untilStr = MySQLEscape.quote(sqlDate(until))
+        let typeFilter: String
+        if let typeColumn = typeColumn, let typeName = typeName {
+            typeFilter = " AND `\(typeColumn)` = '\(typeName)'"
+        } else {
+            typeFilter = ""
+        }
+
+        var totalDeleted: UInt64 = 0
+        // Batch NOT IN clauses to avoid exceeding MySQL max_allowed_packet
+        for chunk in validUUIDs.chunked(into: 1000) {
+            let uuidList = chunk.map { MySQLEscape.quote($0) }.joined(separator: ",")
+            let sql = """
+            DELETE FROM `\(table)`
+            WHERE start_date >= \(sinceStr)
+              AND start_date <= \(untilStr)
+              \(typeFilter)
+              AND uuid NOT IN (\(uuidList))
+            """
+            totalDeleted += try await mysql.execute(sql)
+        }
+        return Int(totalDeleted)
+    }
+
     // MARK: - Quantity sync
 
     // Streams HealthKit samples in pages using cursor-based HKSampleQuery pagination,
     // inserting each page before requesting the next. Peak memory stays flat regardless
     // of total record count. Uses INSERT IGNORE to safely handle any overlap between pages.
+    // After syncing, removes any database rows in the queried date range whose UUIDs no
+    // longer exist in HealthKit (e.g. samples deleted or replaced by a third-party app).
     private func syncQuantityType(
         typeDesc: QuantityTypeDescriptor,
         mysql: MySQLService,
@@ -1752,6 +1796,7 @@ final class SyncService: ObservableObject {
         let typeName = MySQLEscape.escapeString(typeDesc.id)
         let unitStr  = MySQLEscape.escapeString(typeDesc.unitString)
         var total = 0
+        var syncedUUIDs: [String] = []
 
         try await healthKit.streamQuantitySamples(typeID: typeDesc.hkIdentifier, from: since, until: until) { hkBatch in
             for batch in hkBatch.chunked(into: insertBatchSize) {
@@ -1773,12 +1818,26 @@ final class SyncService: ObservableObject {
                     VALUES \(valuesList)
                     """
                 }
+                syncedUUIDs.append(contentsOf: batch.map { $0.uuid.uuidString })
                 try Task.checkCancellation()
                 try await mysql.execute(sql)
                 total += batch.count
                 onBatchInserted?(total)
             }
         }
+
+        // Reconcile: remove DB rows whose UUIDs no longer exist in HealthKit for this date range.
+        // Only reconcile when re-querying an overlap window (since != nil), not on first full sync.
+        if let since = since, !syncedUUIDs.isEmpty {
+            let deleted = try await reconcileStaleRecords(
+                table: "health_quantity_samples", typeColumn: "type", typeName: typeName,
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+            )
+            if deleted > 0 {
+                print("[SyncService] Reconciled \(deleted) stale \(typeDesc.displayName) records")
+            }
+        }
+
         return total
     }
 
@@ -1793,6 +1852,7 @@ final class SyncService: ObservableObject {
     ) async throws -> Int {
         let typeName = MySQLEscape.escapeString(typeDesc.id)
         var total = 0
+        var syncedUUIDs: [String] = []
         try await healthKit.streamCategorySamples(typeID: typeDesc.hkIdentifier, from: since, until: until) { hkBatch in
             for batch in hkBatch.chunked(into: insertBatchSize) {
                 let sql: String = autoreleasepool {
@@ -1813,11 +1873,23 @@ final class SyncService: ObservableObject {
                     VALUES \(values)
                     """
                 }
+                syncedUUIDs.append(contentsOf: batch.map { $0.uuid.uuidString })
                 try Task.checkCancellation()
                 try await mysql.execute(sql)
                 total += batch.count
             }
         }
+
+        if let since = since, !syncedUUIDs.isEmpty {
+            let deleted = try await reconcileStaleRecords(
+                table: "health_category_samples", typeColumn: "type", typeName: typeName,
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+            )
+            if deleted > 0 {
+                print("[SyncService] Reconciled \(deleted) stale \(typeDesc.displayName) category records")
+            }
+        }
+
         return total
     }
 
@@ -1833,6 +1905,7 @@ final class SyncService: ObservableObject {
 
     private func syncWorkouts(mysql: MySQLService, since: Date?, until: Date? = nil) async throws -> Int {
         var total = 0
+        var syncedUUIDs: [String] = []
         try await healthKit.streamWorkouts(from: since, until: until) { workouts in
             for batch in workouts.chunked(into: batchSize) {
                 let sql: String = autoreleasepool {
@@ -1859,11 +1932,23 @@ final class SyncService: ObservableObject {
                     VALUES \(values)
                     """
                 }
+                syncedUUIDs.append(contentsOf: batch.map { $0.uuid.uuidString })
                 try Task.checkCancellation()
                 try await mysql.execute(sql)
                 total += batch.count
             }
         }
+
+        if let since = since, !syncedUUIDs.isEmpty {
+            let deleted = try await reconcileStaleRecords(
+                table: "health_workouts", typeColumn: nil, typeName: nil,
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+            )
+            if deleted > 0 {
+                print("[SyncService] Reconciled \(deleted) stale workout records")
+            }
+        }
+
         return total
     }
 
@@ -1874,6 +1959,7 @@ final class SyncService: ObservableObject {
         guard !correlations.isEmpty else { return 0 }
 
         var total = 0
+        var syncedUUIDs: [String] = []
         let systolicType = HKObjectType.quantityType(forIdentifier: .bloodPressureSystolic)!
         let diastolicType = HKObjectType.quantityType(forIdentifier: .bloodPressureDiastolic)!
 
@@ -1893,6 +1979,7 @@ final class SyncService: ObservableObject {
                 return "(\(uuid),\(sysVal),\(diaVal),\(start),\(src),\(device),NULL)"
             }
 
+            syncedUUIDs.append(contentsOf: batch.map { $0.uuid.uuidString })
             if values.isEmpty { continue }
             let sql = """
             INSERT IGNORE INTO health_blood_pressure
@@ -1902,6 +1989,17 @@ final class SyncService: ObservableObject {
             try await mysql.execute(sql)
             total += values.count
         }
+
+        if let since = since, !syncedUUIDs.isEmpty {
+            let deleted = try await reconcileStaleRecords(
+                table: "health_blood_pressure", typeColumn: nil, typeName: nil,
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+            )
+            if deleted > 0 {
+                print("[SyncService] Reconciled \(deleted) stale blood pressure records")
+            }
+        }
+
         return total
     }
 
@@ -1914,6 +2012,7 @@ final class SyncService: ObservableObject {
         // Single-row INSERTs: each row contains voltage_measurements JSON (~30KB).
         // Batching risks exceeding max_allowed_packet, and ECG count is typically small.
         var total = 0
+        let syncedUUIDs = recordings.map { $0.uuid.uuidString }
         for ecg in recordings {
             let uuid   = MySQLEscape.quote(ecg.uuid.uuidString)
             let cls    = MySQLEscape.quote(ecg.classification.label)
@@ -1944,6 +2043,17 @@ final class SyncService: ObservableObject {
             try await mysql.execute(sql)
             total += 1
         }
+
+        if let since = since {
+            let deleted = try await reconcileStaleRecords(
+                table: "health_ecg", typeColumn: nil, typeName: nil,
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+            )
+            if deleted > 0 {
+                print("[SyncService] Reconciled \(deleted) stale ECG records")
+            }
+        }
+
         return total
     }
 
@@ -1954,6 +2064,7 @@ final class SyncService: ObservableObject {
         guard !audiograms.isEmpty else { return 0 }
 
         var total = 0
+        let syncedUUIDs = audiograms.map { $0.uuid.uuidString }
         var valueStrings: [String] = []
         for ag in audiograms {
             let uuid  = MySQLEscape.quote(ag.uuid.uuidString)
@@ -1990,6 +2101,17 @@ final class SyncService: ObservableObject {
             """)
             total += valueStrings.count
         }
+
+        if let since = since {
+            let deleted = try await reconcileStaleRecords(
+                table: "health_audiograms", typeColumn: nil, typeName: nil,
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+            )
+            if deleted > 0 {
+                print("[SyncService] Reconciled \(deleted) stale audiogram records")
+            }
+        }
+
         return total
     }
 
@@ -2005,6 +2127,7 @@ final class SyncService: ObservableObject {
         let mmUnit      = HKUnit.meterUnit(with: .milli)
 
         var total = 0
+        let syncedUUIDs = prescriptions.map { $0.uuid.uuidString }
         var valueStrings: [String] = []
         for p in prescriptions {
             let uuid     = MySQLEscape.quote(p.uuid.uuidString)
@@ -2090,6 +2213,17 @@ final class SyncService: ObservableObject {
             """)
             total += valueStrings.count
         }
+
+        if let since = since {
+            let deleted = try await reconcileStaleRecords(
+                table: "health_vision_prescriptions", typeColumn: nil, typeName: nil,
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+            )
+            if deleted > 0 {
+                print("[SyncService] Reconciled \(deleted) stale vision prescription records")
+            }
+        }
+
         return total
     }
 
@@ -2108,6 +2242,7 @@ final class SyncService: ObservableObject {
         guard !samples.isEmpty else { return 0 }
 
         var total = 0
+        let syncedUUIDs = samples.map { $0.uuid.uuidString }
         var valueStrings: [String] = []
         for sample in samples {
             let uuid         = MySQLEscape.quote(sample.uuid.uuidString)
@@ -2151,6 +2286,17 @@ final class SyncService: ObservableObject {
             """)
             total += valueStrings.count
         }
+
+        if let since = since {
+            let deleted = try await reconcileStaleRecords(
+                table: "health_state_of_mind", typeColumn: nil, typeName: nil,
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+            )
+            if deleted > 0 {
+                print("[SyncService] Reconciled \(deleted) stale state of mind records")
+            }
+        }
+
         return total
     }
 }
