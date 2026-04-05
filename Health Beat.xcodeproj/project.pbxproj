@@ -65,6 +65,9 @@
 		AABB0000000000000002003C /* DataValidationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001003B /* DataValidationView.swift */; };
 		AABB0000000000000002003D /* BrandFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001003C /* BrandFooter.swift */; };
 		AABB0000000000000002003E /* GeofenceSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001003D /* GeofenceSyncService.swift */; };
+		AABB0000000000000002003F /* SyncHealthDataIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001003E /* SyncHealthDataIntent.swift */; };
+		AABB00000000000000020040 /* FullSyncHealthDataIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001003F /* FullSyncHealthDataIntent.swift */; };
+		AABB00000000000000020041 /* HealthBeatShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010040 /* HealthBeatShortcuts.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -153,6 +156,9 @@
 		AABB0000000000000001003B /* DataValidationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataValidationView.swift; sourceTree = "<group>"; };
 		AABB0000000000000001003C /* BrandFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandFooter.swift; sourceTree = "<group>"; };
 		AABB0000000000000001003D /* GeofenceSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeofenceSyncService.swift; sourceTree = "<group>"; };
+		AABB0000000000000001003E /* SyncHealthDataIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncHealthDataIntent.swift; sourceTree = "<group>"; };
+		AABB0000000000000001003F /* FullSyncHealthDataIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullSyncHealthDataIntent.swift; sourceTree = "<group>"; };
+		AABB00000000000000010040 /* HealthBeatShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthBeatShortcuts.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -196,6 +202,7 @@
 				AABB00000000000000010002 /* ContentView.swift */,
 				AABB00000000000000030003 /* Models */,
 				AABB00000000000000030004 /* Services */,
+				AABB0000000000000003000E /* Intents */,
 				AABB00000000000000030005 /* ViewModels */,
 				AABB00000000000000030006 /* Views */,
 				AABB0000000000000003000A /* Resources */,
@@ -329,6 +336,16 @@
 				AABB0000000000000001001F /* Health BeatWidgets.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		AABB0000000000000003000E /* Intents */ = {
+			isa = PBXGroup;
+			children = (
+				AABB0000000000000001003E /* SyncHealthDataIntent.swift */,
+				AABB0000000000000001003F /* FullSyncHealthDataIntent.swift */,
+				AABB00000000000000010040 /* HealthBeatShortcuts.swift */,
+			);
+			path = Intents;
 			sourceTree = "<group>";
 		};
 		AABB0000000000000003000D /* HealthBeatWidgets */ = {
@@ -490,6 +507,9 @@
 				AABB00000000000000020037 /* iCloudSyncService.swift in Sources */,
 				AABB00000000000000020038 /* iCloudSyncSettingsView.swift in Sources */,
 				AABB0000000000000002003E /* GeofenceSyncService.swift in Sources */,
+				AABB0000000000000002003F /* SyncHealthDataIntent.swift in Sources */,
+				AABB00000000000000020040 /* FullSyncHealthDataIntent.swift in Sources */,
+				AABB00000000000000020041 /* HealthBeatShortcuts.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
