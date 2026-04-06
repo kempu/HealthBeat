@@ -2,6 +2,7 @@ import Combine
 import Foundation
 import HealthKit
 import SwiftUI
+import UIKit
 
 @MainActor
 final class SyncViewModel: ObservableObject {
@@ -29,6 +30,19 @@ final class SyncViewModel: ObservableObject {
         NotificationCenter.default.publisher(for: .healthBeatDatabaseDidReset)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.syncState.resetAllLocalState() }
+            .store(in: &cancellables)
+
+        // Reload persisted sync state when the app returns to the foreground so
+        // syncs that ran out-of-VM (Siri shortcuts, background tasks, observer
+        // queries) become visible in the dashboard. Skip while a sync is active
+        // in this VM to avoid clobbering live progress.
+        NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                guard !self.syncState.isAnySyncRunning else { return }
+                self.syncState.restore()
+            }
             .store(in: &cancellables)
     }
 
