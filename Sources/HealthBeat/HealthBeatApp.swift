@@ -141,6 +141,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             let state = SyncState()
             let service = SyncService(syncState: state)
             service.isBackgroundSync = true
+            service.attachEAIfConfigured()
             if isFullSyncResume {
                 UserDefaults.standard.set(false, forKey: "pendingFullSyncResume")
                 await service.runFullSync(config: config)
@@ -188,6 +189,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             let service = SyncService(syncState: state)
             service.isBackgroundSync = true
             service.suppressLiveActivity = true
+            service.attachEAIfConfigured()
             await service.runIncrementalSync(config: config)
             if let error = state.errorMessage {
                 BackgroundSyncManager.shared.postFailureNotification(error)

@@ -90,6 +90,7 @@ final class BackgroundSyncManager {
         let service = SyncService(syncState: state)
         service.isBackgroundSync = true
         service.suppressLiveActivity = true
+        service.attachEAIfConfigured()
 
         var bgTaskID: UIBackgroundTaskIdentifier = .invalid
         bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "foreground-sync") {
@@ -269,6 +270,7 @@ final class BackgroundSyncManager {
         let service = SyncService(syncState: state)
         service.isBackgroundSync = true
         service.suppressLiveActivity = true
+        service.attachEAIfConfigured()
         let task = Task { await service.runTargetedSync(categoryIDs: categoryIDs, config: config) }
         syncTask = task
         await task.value

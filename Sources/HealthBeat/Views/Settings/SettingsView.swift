@@ -11,14 +11,14 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
+                Section("Backend Destinations") {
                     NavigationLink {
                         MySQLSettingsView(vm: vm)
                     } label: {
                         HStack(spacing: 12) {
                             iconBox("cylinder.fill", color: .orange)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("MySQL Connection")
+                                Text("MySQL Direct")
                                     .font(.subheadline.weight(.semibold))
                                 Text("\(vm.config.host):\(String(vm.config.port)) / \(vm.config.database)")
                                     .font(.caption)
@@ -27,6 +27,25 @@ struct SettingsView: View {
                             }
                         }
                     }
+
+                    NavigationLink {
+                        EASettingsView()
+                    } label: {
+                        HStack(spacing: 12) {
+                            iconBox("waveform.path.ecg", color: Color(red: 232/255, green: 68/255, blue: 111/255))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Executive Assistant")
+                                    .font(.subheadline.weight(.semibold))
+                                Text(eaSubtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                }
+
+                Section {
 
                     NavigationLink {
                         HealthPermissionsView(vm: vm)
@@ -192,6 +211,14 @@ struct SettingsView: View {
             return "Reporting via \(device)"
         }
         return LocationConfig.load().trackingEnabled ? "Tracking enabled" : "Tracking disabled"
+    }
+
+    private var eaSubtitle: String {
+        let cfg = EAConfig.load()
+        if !cfg.enabled { return "Disabled" }
+        if cfg.syncKey.isEmpty { return "Needs sync key" }
+        if cfg.normalisedBaseURL == nil { return "Invalid URL" }
+        return cfg.baseURL
     }
 
     private var backupSubtitle: String {

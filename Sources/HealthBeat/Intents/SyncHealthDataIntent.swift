@@ -21,6 +21,7 @@ struct SyncHealthDataIntent: AppIntent {
         let service = SyncService(syncState: state)
         service.isBackgroundSync = true
         service.suppressLiveActivity = true
+        service.attachEAIfConfigured()
 
         await service.runIncrementalSync(config: config)
 

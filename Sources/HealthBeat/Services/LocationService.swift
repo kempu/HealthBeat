@@ -89,6 +89,10 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
         let config = MySQLConfig.load()
         let mysql = MySQLService()
+        let eaWriter: EABackendWriter? = {
+            let eaConfig = EAConfig.load()
+            return eaConfig.isConfigured ? EABackendWriter(config: eaConfig) : nil
+        }()
         do {
             try await mysql.connect(config: config)
             defer { Task { await mysql.disconnect() } }
@@ -114,11 +118,80 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
                 VALUES \(values)
                 """
                 try await mysql.execute(sql)
+
+                // EA mirror — independent try/catch so an EA outage doesn't
+                // cause MySQL re-queueing (which would duplicate the rows
+                // we just inserted, since location_tracks has no UNIQUE).
+                if let eaWriter {
+                    let rows: [HBLocationRow] = batch.map { loc in
+                        HBLocationRow(
+                            latitude: loc.coordinate.latitude,
+                            longitude: loc.coordinate.longitude,
+                            altitude: loc.altitude,
+                            horizontal_accuracy: loc.horizontalAccuracy,
+                            vertical_accuracy: loc.verticalAccuracy,
+                            speed: loc.speed,
+                            course: loc.course,
+                            timestamp: sqlDate(loc.timestamp)
+                        )
+                    }
+                    do {
+                        try await eaWriter.writeLocationTracks(rows)
+                    } catch {
+                        // Park failed EA batch for retry on next flush.
+                        Self.appendEAPending(rows)
+                        print("[LocationService] EA mirror failed for \(rows.count) rows — parked for retry: \(error)")
+                    }
+                }
+
                 offset += batchSize
             }
+
+            // Drain any previously-parked EA batches now that we've shown EA
+            // is reachable (the current pass succeeded for the batches above).
+            if let eaWriter {
+                await Self.drainEAPending(using: eaWriter)
+            }
         } catch {
-            // Re-queue on failure so data is not lost
+            // Re-queue on MySQL failure so data is not lost.
             pendingLocations = toFlush + pendingLocations
+        }
+    }
+
+    // MARK: - EA mirror retry queue (location_tracks only)
+
+    private static let eaPendingKey = "ea_pending_location_batches_v1"
+
+    /// Append a failed batch to the UserDefaults retry queue. Cap at 50
+    /// batches (~25k locations) to stop indefinite growth if EA stays down;
+    /// past the cap, oldest entries are dropped first — surface this as a
+    /// warning so it's not silent.
+    private static func appendEAPending(_ rows: [HBLocationRow]) {
+        guard let encoded = try? JSONEncoder().encode(rows) else { return }
+        var queue = (UserDefaults.standard.array(forKey: eaPendingKey) as? [Data]) ?? []
+        queue.append(encoded)
+        if queue.count > 50 {
+            let dropped = queue.count - 50
+            queue = Array(queue.suffix(50))
+            print("[LocationService] EA mirror queue exceeded 50 batches — dropped \(dropped) oldest")
+        }
+        UserDefaults.standard.set(queue, forKey: eaPendingKey)
+    }
+
+    private static func drainEAPending(using writer: EABackendWriter) async {
+        var queue = (UserDefaults.standard.array(forKey: eaPendingKey) as? [Data]) ?? []
+        guard !queue.isEmpty else { return }
+        let snapshot = queue
+        queue = []
+        UserDefaults.standard.set(queue, forKey: eaPendingKey)
+        let decoder = JSONDecoder()
+        for data in snapshot {
+            guard let rows = try? decoder.decode([HBLocationRow].self, from: data) else { continue }
+            do { try await writer.writeLocationTracks(rows) }
+            catch {
+                appendEAPending(rows)
+                print("[LocationService] Drain failed — re-parking \(rows.count) rows: \(error)")
+            }
         }
     }
 
@@ -129,6 +202,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         }
         defer { UIApplication.shared.endBackgroundTask(bgTask) }
 
+        let eventTimestamp = location?.timestamp ?? Date()
+
         let config = MySQLConfig.load()
         let mysql = MySQLService()
         do {
@@ -138,7 +213,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             let name    = MySQLEscape.quote(placeName)
             let pType   = placeType.map { MySQLEscape.quote($0) } ?? "NULL"
             let evType  = MySQLEscape.quote(eventType)
-            let ts      = MySQLEscape.quote(sqlDate(location?.timestamp ?? Date()))
+            let ts      = MySQLEscape.quote(sqlDate(eventTimestamp))
             let lat     = location.map { "\($0.coordinate.latitude)" } ?? "NULL"
             let lon     = location.map { "\($0.coordinate.longitude)" } ?? "NULL"
             let sql  = """
@@ -148,6 +223,24 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             try await mysql.execute(sql)
         } catch {
             // Silent — background context, nothing to surface to user
+        }
+
+        // EA mirror — separate path so an EA outage doesn't block the
+        // background task from completing. Single-row writes are cheap;
+        // best-effort with a single log on failure.
+        let eaConfig = EAConfig.load()
+        if eaConfig.isConfigured {
+            let writer = EABackendWriter(config: eaConfig)
+            let row = HBGeofenceEventRow(
+                place_name: placeName,
+                place_type: placeType,
+                event_type: eventType,
+                latitude: location?.coordinate.latitude,
+                longitude: location?.coordinate.longitude,
+                timestamp: sqlDate(eventTimestamp)
+            )
+            do { try await writer.writeGeofenceEvent(row) }
+            catch { print("[LocationService] EA geofence-event mirror failed: \(error)") }
         }
     }
 

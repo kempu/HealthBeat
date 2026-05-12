@@ -122,6 +122,83 @@ enum GeofenceSyncService {
             PlaceCategory.saveAll(localCategories)
         }
 
+        // Step 5: EA bidirectional sync (only if user has enabled the EA
+        // destination in Settings). Pull updated rows from EA, merge with
+        // local + push every local row up so EA learns about new app-origin
+        // categories.
+        if EAConfig.load().isConfigured {
+            let eaChanged = try await syncPlaceCategoriesWithEA(into: &localCategories)
+            if eaChanged {
+                changed = true
+                PlaceCategory.saveAll(localCategories)
+            }
+        }
+
+        return changed
+    }
+
+    /// EA bidirectional sync for place categories. Mirrors the MySQL flow
+    /// but over HTTP. Last-write-wins by `updated_at`.
+    private static func syncPlaceCategoriesWithEA(into localCategories: inout [PlaceCategory]) async throws -> Bool {
+        let cfg = EAConfig.load()
+        guard cfg.isConfigured else { return false }
+        let service = EAService(config: cfg)
+
+        var changed = false
+        let cursor = UserDefaults.standard.string(forKey: "ea_categories_cursor")
+        let remote = try await service.pullCategories(since: cursor)
+
+        var localById = Dictionary(localCategories.map { ($0.id, $0) }, uniquingKeysWith: { _, b in b })
+        for row in remote {
+            guard let remoteId = UUID(uuidString: row.id) else { continue }
+            let remoteUpdatedAt = row.updated_at.flatMap(parseDate) ?? Date()
+            let remoteOrigin = PlaceCategory.SyncOrigin(rawValue: row.origin ?? "database") ?? .database
+            let remoteIsDeleted = (row.is_deleted) == 1
+
+            if let local = localById[remoteId] {
+                if remoteUpdatedAt > local.updatedAt {
+                    if let idx = localCategories.firstIndex(where: { $0.id == remoteId }) {
+                        localCategories[idx].name = row.name
+                        localCategories[idx].systemImage = row.system_image
+                        localCategories[idx].sortOrder = row.sort_order ?? localCategories[idx].sortOrder
+                        localCategories[idx].origin = remoteOrigin
+                        localCategories[idx].isDeleted = remoteIsDeleted
+                        localCategories[idx].updatedAt = remoteUpdatedAt
+                        localById[remoteId] = localCategories[idx]
+                        changed = true
+                    }
+                }
+            } else if !remoteIsDeleted {
+                let cat = PlaceCategory(
+                    id: remoteId, name: row.name, systemImage: row.system_image,
+                    origin: remoteOrigin, isDeleted: false, updatedAt: remoteUpdatedAt,
+                    sortOrder: row.sort_order ?? 0
+                )
+                localCategories.append(cat)
+                localById[remoteId] = cat
+                changed = true
+            }
+        }
+
+        // Push every local category up.
+        let toPush: [HBPlaceCategoryRow] = localCategories.map { cat in
+            HBPlaceCategoryRow(
+                id: cat.id.uuidString,
+                name: cat.name,
+                system_image: cat.systemImage,
+                sort_order: cat.sortOrder,
+                origin: cat.origin.rawValue,
+                is_deleted: cat.isDeleted ? 1 : 0,
+                created_at: sqlDate(cat.updatedAt),
+                updated_at: sqlDate(cat.updatedAt)
+            )
+        }
+        if !toPush.isEmpty {
+            try await service.postRecords(endpoint: "/api/v1/healthbeat/place-categories/upsert", records: toPush)
+        }
+
+        // Advance the cursor to "now" so subsequent pulls only fetch deltas.
+        UserDefaults.standard.set(sqlDate(Date()), forKey: "ea_categories_cursor")
         return changed
     }
 
@@ -236,9 +313,88 @@ enum GeofenceSyncService {
             GeoFence.saveAll(localFences)
         }
 
+        // Step 5: EA bidirectional sync — same shape as the categories
+        // flow above, but over HTTP against /api/v1/healthbeat/geofences*.
+        if EAConfig.load().isConfigured {
+            let eaChanged = try await syncGeofencesWithEA(into: &localFences)
+            if eaChanged {
+                changed = true
+                GeoFence.saveAll(localFences)
+            }
+        }
+
         let activeCount = localFences.filter { !$0.isDeleted }.count
         print("[GeofenceSyncService] Sync done: changed=\(changed), pushed=\(fencesToPush.count), active=\(activeCount)")
 
+        return changed
+    }
+
+    /// EA bidirectional sync for geofences. Same shape as the MySQL flow.
+    private static func syncGeofencesWithEA(into localFences: inout [GeoFence]) async throws -> Bool {
+        let cfg = EAConfig.load()
+        guard cfg.isConfigured else { return false }
+        let service = EAService(config: cfg)
+
+        var changed = false
+        let cursor = UserDefaults.standard.string(forKey: "ea_geofences_cursor")
+        let remote = try await service.pullGeofences(since: cursor)
+
+        var localById = Dictionary(localFences.map { ($0.id, $0) }, uniquingKeysWith: { _, b in b })
+        for row in remote {
+            guard let remoteId = UUID(uuidString: row.id) else { continue }
+            let remoteUpdatedAt = row.updated_at.flatMap(parseDate) ?? Date()
+            let remoteOrigin = GeoFence.SyncOrigin(rawValue: row.origin ?? "database") ?? .database
+            let remoteIsDeleted = row.is_deleted == 1
+            let placeCategoryId = row.place_category_id.flatMap { UUID(uuidString: $0) }
+
+            if let local = localById[remoteId] {
+                if remoteUpdatedAt > local.updatedAt {
+                    if let idx = localFences.firstIndex(where: { $0.id == remoteId }) {
+                        localFences[idx].name = row.name
+                        localFences[idx].latitude = row.latitude
+                        localFences[idx].longitude = row.longitude
+                        localFences[idx].radius = row.radius
+                        localFences[idx].placeCategoryId = placeCategoryId
+                        localFences[idx].origin = remoteOrigin
+                        localFences[idx].isDeleted = remoteIsDeleted
+                        localFences[idx].updatedAt = remoteUpdatedAt
+                        localById[remoteId] = localFences[idx]
+                        changed = true
+                    }
+                }
+            } else if !remoteIsDeleted {
+                var fence = GeoFence(
+                    name: row.name, latitude: row.latitude, longitude: row.longitude,
+                    radius: row.radius, placeCategoryId: placeCategoryId,
+                    origin: remoteOrigin, isDeleted: false, updatedAt: remoteUpdatedAt
+                )
+                fence.id = remoteId
+                localFences.append(fence)
+                localById[remoteId] = fence
+                changed = true
+            }
+        }
+
+        // Push every local geofence up so EA learns about app-origin rows.
+        let toPush: [HBGeofenceDefinitionRow] = localFences.map { fence in
+            HBGeofenceDefinitionRow(
+                id: fence.id.uuidString,
+                name: fence.name,
+                latitude: fence.latitude,
+                longitude: fence.longitude,
+                radius: fence.radius,
+                place_category_id: fence.placeCategoryId?.uuidString,
+                origin: fence.origin.rawValue,
+                is_deleted: fence.isDeleted ? 1 : 0,
+                created_at: sqlDate(fence.updatedAt),
+                updated_at: sqlDate(fence.updatedAt)
+            )
+        }
+        if !toPush.isEmpty {
+            try await service.postRecords(endpoint: "/api/v1/healthbeat/geofences/upsert", records: toPush)
+        }
+
+        UserDefaults.standard.set(sqlDate(Date()), forKey: "ea_geofences_cursor")
         return changed
     }
 }

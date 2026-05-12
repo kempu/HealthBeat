@@ -30,6 +30,25 @@ final class SyncService: ObservableObject {
     let syncState: SyncState
     private var mysql: MySQLService?
 
+    /// Optional secondary destination that receives the same typed batches
+    /// as MySQL. Today this is set to an `EABackendWriter` by
+    /// `BackgroundSyncManager` when the user has enabled the EA destination
+    /// in Settings. Set BEFORE `runIncrementalSync` / `runHistoricalBackfill`;
+    /// nil = MySQL-only. Errors thrown by the writer propagate up exactly
+    /// like MySQL errors do — the offending pass is logged as failed and
+    /// the cursors are NOT advanced, so the next pass retries cleanly.
+    var eaWriter: BackendWriter?
+
+    /// Convenience: if the user has configured an EA destination in Settings,
+    /// attach an `EABackendWriter` so this sync pass mirrors every batch to
+    /// EA in addition to MySQL. No-op when EA is not configured/enabled.
+    func attachEAIfConfigured() {
+        let eaCfg = EAConfig.load()
+        if eaCfg.isConfigured {
+            eaWriter = EABackendWriter(config: eaCfg)
+        }
+    }
+
     // When true, skip live activity and allow resumable sync across background task invocations
     var isBackgroundSync = false
 
@@ -1500,12 +1519,12 @@ final class SyncService: ObservableObject {
         var total = 0
 
         for batch in summaries.chunked(into: batchSize) {
+            var summaryRows: [HBActivitySummaryRow] = []
             let sql: String? = autoreleasepool {
                 let values: [String] = batch.compactMap { summary in
                     guard let date = calendar.date(from: summary.dateComponents(for: calendar)) else { return nil }
-                    let dateStr = MySQLEscape.quote(
-                        DateFormatter.mysqlDate.string(from: date)
-                    )
+                    let dateString = DateFormatter.mysqlDate.string(from: date)
+                    let dateStr = MySQLEscape.quote(dateString)
                     let activeEnergy = summary.activeEnergyBurned.doubleValue(for: .kilocalorie())
                     let activeEnergyGoal = summary.activeEnergyBurnedGoal.doubleValue(for: .kilocalorie())
                     let exerciseTime = summary.appleExerciseTime.doubleValue(for: .minute())
@@ -1519,6 +1538,15 @@ final class SyncService: ObservableObject {
 
                     let standHours = Int(standHoursDouble)
                     let standHoursGoal = Int(standHoursGoalDouble)
+                    summaryRows.append(HBActivitySummaryRow(
+                        date: dateString,
+                        active_energy_burned: activeEnergy,
+                        active_energy_burned_goal: activeEnergyGoal,
+                        exercise_time_minutes: exerciseTime,
+                        exercise_time_goal_minutes: exerciseTimeGoal,
+                        stand_hours: standHours,
+                        stand_hours_goal: standHoursGoal
+                    ))
                     return "(\(dateStr), \(activeEnergy), \(activeEnergyGoal), \(exerciseTime), \(exerciseTimeGoal), \(standHours), \(standHoursGoal))"
                 }
                 guard !values.isEmpty else { return nil }
@@ -1540,6 +1568,9 @@ final class SyncService: ObservableObject {
             if let sql {
                 try Task.checkCancellation()
                 try await mysql.execute(sql)
+                if let eaWriter, !summaryRows.isEmpty {
+                    try await eaWriter.writeActivitySummaries(summaryRows)
+                }
                 total += batch.count
             }
         }
@@ -1580,7 +1611,8 @@ final class SyncService: ObservableObject {
                         let ts = MySQLEscape.escapeString(sqlDate(loc.timestamp))
                         return "{\"ts\":\"\(ts)\",\"lat\":\(loc.coordinate.latitude),\"lng\":\(loc.coordinate.longitude),\"alt\":\(loc.altitude),\"hacc\":\(loc.horizontalAccuracy),\"vacc\":\(loc.verticalAccuracy)}"
                     }.joined(separator: ",")
-                    let locJSONQuoted = MySQLEscape.quote("[\(locJSON)]")
+                    let locJSONString = "[\(locJSON)]"
+                    let locJSONQuoted = MySQLEscape.quote(locJSONString)
 
                     let sql = """
                     INSERT IGNORE INTO health_workout_routes
@@ -1588,6 +1620,15 @@ final class SyncService: ObservableObject {
                     VALUES (\(uuid), \(workoutUUID), \(startDate), \(count), \(locJSONQuoted))
                     """
                     try await mysql.execute(sql)
+                    if let eaWriter {
+                        try await eaWriter.writeWorkoutRoutes([HBWorkoutRouteRow(
+                            uuid: route.uuid.uuidString,
+                            workout_uuid: workout.uuid.uuidString,
+                            start_date: sqlDate(route.startDate),
+                            location_count: count,
+                            locations_json: locJSONString
+                        )])
+                    }
                     total += 1
                 }
             }
@@ -1608,6 +1649,7 @@ final class SyncService: ObservableObject {
     private func syncMedicationsIOS26(mysql: MySQLService, since: Date?, until: Date? = nil) async throws -> Int {
         var total = 0
         var valueStrings: [String] = []
+        var pendingRows: [HBMedicationRow] = []
         let medications = (try? await healthKit.fetchUserAnnotatedMedications()) ?? []
 
         if medications.isEmpty {
@@ -1615,10 +1657,12 @@ final class SyncService: ObservableObject {
             for event in events {
                 try Task.checkCancellation()
                 valueStrings.append(medicationValueString(event, medicationName: nil))
+                pendingRows.append(medicationRow(event, medicationName: nil))
                 if valueStrings.count >= batchSize {
-                    try await flushMedicationBatch(valueStrings, mysql: mysql)
+                    try await flushMedicationBatch(valueStrings, rows: pendingRows, mysql: mysql)
                     total += valueStrings.count
                     valueStrings.removeAll()
+                    pendingRows.removeAll()
                 }
             }
         } else {
@@ -1640,28 +1684,53 @@ final class SyncService: ObservableObject {
                 for event in events {
                     try Task.checkCancellation()
                     valueStrings.append(medicationValueString(event, medicationName: concept.displayText))
+                    pendingRows.append(medicationRow(event, medicationName: concept.displayText))
                     if valueStrings.count >= batchSize {
-                        try await flushMedicationBatch(valueStrings, mysql: mysql)
+                        try await flushMedicationBatch(valueStrings, rows: pendingRows, mysql: mysql)
                         total += valueStrings.count
                         valueStrings.removeAll()
+                        pendingRows.removeAll()
                     }
                 }
             }
         }
         if !valueStrings.isEmpty {
-            try await flushMedicationBatch(valueStrings, mysql: mysql)
+            try await flushMedicationBatch(valueStrings, rows: pendingRows, mysql: mysql)
             total += valueStrings.count
         }
         return total
     }
 
-    private func flushMedicationBatch(_ values: [String], mysql: MySQLService) async throws {
+    private func flushMedicationBatch(_ values: [String], rows: [HBMedicationRow], mysql: MySQLService) async throws {
         try Task.checkCancellation()
         try await mysql.execute("""
         INSERT IGNORE INTO health_medications
           (uuid,medication_name,dosage,log_status,start_date,end_date,source_name,source_bundle_id,device_name,metadata)
         VALUES \(values.joined(separator: ","))
         """)
+        if let eaWriter, !rows.isEmpty {
+            try await eaWriter.writeMedications(rows)
+        }
+    }
+
+    @available(iOS 26, *)
+    private func medicationRow(
+        _ event: HKMedicationDoseEvent,
+        medicationName: String?
+    ) -> HBMedicationRow {
+        let dosage = event.doseQuantity.map { "\($0) \(event.unit.unitString)" }
+        return HBMedicationRow(
+            uuid: event.uuid.uuidString,
+            medication_name: medicationName,
+            dosage: dosage,
+            log_status: logStatusString(event.logStatus),
+            start_date: sqlDate(event.startDate),
+            end_date: sqlDate(event.endDate),
+            source_name: event.sourceRevision.source.name,
+            source_bundle_id: event.sourceRevision.source.bundleIdentifier,
+            device_name: event.device?.name,
+            metadata: nil
+        )
     }
 
     @available(iOS 26, *)
@@ -1737,6 +1806,42 @@ final class SyncService: ObservableObject {
     }
 
     // MARK: - Stale record reconciliation
+
+    // Runs `reconcileStaleRecords` against MySQL AND, if EA is enabled,
+    // the same slice via `eaWriter.reconcileSlice`. Single call site for
+    // every per-type sync method so both destinations stay in lock-step
+    // when Apple Health removes a sample.
+    private func reconcileEverywhere(
+        table: String,
+        typeColumn: String?,
+        typeName: String?,
+        since: Date,
+        until: Date,
+        validUUIDs: [String],
+        mysql: MySQLService,
+        displayLabel: String
+    ) async throws {
+        let mysqlDeleted = try await reconcileStaleRecords(
+            table: table, typeColumn: typeColumn, typeName: typeName,
+            since: since, until: until, validUUIDs: validUUIDs, mysql: mysql
+        )
+        if mysqlDeleted > 0 {
+            print("[SyncService] Reconciled \(mysqlDeleted) stale \(displayLabel) records (MySQL)")
+        }
+        if let eaWriter {
+            let eaDeleted = try await eaWriter.reconcileSlice(
+                table: table,
+                typeColumn: typeColumn,
+                typeValue: typeName,
+                since: sqlDate(since),
+                until: sqlDate(until),
+                validUUIDs: validUUIDs
+            )
+            if eaDeleted > 0 {
+                print("[SyncService] Reconciled \(eaDeleted) stale \(displayLabel) records (EA)")
+            }
+        }
+    }
 
     // Deletes database rows whose UUIDs no longer exist in HealthKit for a given
     // table, type, and date range. This handles samples that were deleted or replaced
@@ -1837,6 +1942,23 @@ final class SyncService: ObservableObject {
                 syncedUUIDs.append(contentsOf: batch.map { $0.uuid.uuidString })
                 try Task.checkCancellation()
                 try await mysql.execute(sql)
+                if let eaWriter {
+                    let rows: [HBQuantityRow] = batch.map { s in
+                        HBQuantityRow(
+                            uuid: s.uuid.uuidString,
+                            type: typeDesc.id,
+                            value: s.quantity.doubleValue(for: typeDesc.unit),
+                            unit: typeDesc.unitString,
+                            start_date: sqlDate(s.startDate),
+                            end_date: sqlDate(s.endDate),
+                            source_name: s.sourceDisplayName,
+                            source_bundle_id: s.sourceBundleID,
+                            device_name: s.deviceName,
+                            metadata: s.jsonMetadata()
+                        )
+                    }
+                    try await eaWriter.writeQuantitySamples(rows)
+                }
                 total += batch.count
                 onBatchInserted?(total)
             }
@@ -1845,13 +1967,11 @@ final class SyncService: ObservableObject {
         // Reconcile: remove DB rows whose UUIDs no longer exist in HealthKit for this date range.
         // Only reconcile when re-querying an overlap window (since != nil), not on first full sync.
         if let since = since, !syncedUUIDs.isEmpty {
-            let deleted = try await reconcileStaleRecords(
+            try await reconcileEverywhere(
                 table: "health_quantity_samples", typeColumn: "type", typeName: typeName,
-                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,
+                displayLabel: typeDesc.displayName
             )
-            if deleted > 0 {
-                print("[SyncService] Reconciled \(deleted) stale \(typeDesc.displayName) records")
-            }
         }
 
         return total
@@ -1892,18 +2012,33 @@ final class SyncService: ObservableObject {
                 syncedUUIDs.append(contentsOf: batch.map { $0.uuid.uuidString })
                 try Task.checkCancellation()
                 try await mysql.execute(sql)
+                if let eaWriter {
+                    let rows: [HBCategoryRow] = batch.map { s in
+                        HBCategoryRow(
+                            uuid: s.uuid.uuidString,
+                            type: typeDesc.id,
+                            value: s.value,
+                            value_label: typeDesc.valueLabels[s.value] ?? "\(s.value)",
+                            start_date: sqlDate(s.startDate),
+                            end_date: sqlDate(s.endDate),
+                            source_name: s.sourceDisplayName,
+                            source_bundle_id: s.sourceBundleID,
+                            device_name: s.deviceName,
+                            metadata: nil
+                        )
+                    }
+                    try await eaWriter.writeCategorySamples(rows)
+                }
                 total += batch.count
             }
         }
 
         if let since = since, !syncedUUIDs.isEmpty {
-            let deleted = try await reconcileStaleRecords(
+            try await reconcileEverywhere(
                 table: "health_category_samples", typeColumn: "type", typeName: typeName,
-                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,
+                displayLabel: "\(typeDesc.displayName) category"
             )
-            if deleted > 0 {
-                print("[SyncService] Reconciled \(deleted) stale \(typeDesc.displayName) category records")
-            }
         }
 
         return total
@@ -1951,18 +2086,36 @@ final class SyncService: ObservableObject {
                 syncedUUIDs.append(contentsOf: batch.map { $0.uuid.uuidString })
                 try Task.checkCancellation()
                 try await mysql.execute(sql)
+                if let eaWriter {
+                    let rows: [HBWorkoutRow] = batch.map { w in
+                        HBWorkoutRow(
+                            uuid: w.uuid.uuidString,
+                            activity_type: w.activityTypeName,
+                            duration_seconds: w.duration,
+                            total_energy_burned_kcal: w.totalEnergyBurned?.doubleValue(for: .kilocalorie()),
+                            total_distance_meters: w.totalDistance?.doubleValue(for: .meter()),
+                            total_swimming_strokes: w.totalSwimmingStrokeCount?.doubleValue(for: .count()),
+                            total_flights_climbed: w.totalFlightsClimbed?.doubleValue(for: .count()),
+                            start_date: sqlDate(w.startDate),
+                            end_date: sqlDate(w.endDate),
+                            source_name: w.sourceDisplayName,
+                            source_bundle_id: w.sourceBundleID,
+                            device_name: w.deviceName,
+                            metadata: nil
+                        )
+                    }
+                    try await eaWriter.writeWorkouts(rows)
+                }
                 total += batch.count
             }
         }
 
         if let since = since, !syncedUUIDs.isEmpty {
-            let deleted = try await reconcileStaleRecords(
+            try await reconcileEverywhere(
                 table: "health_workouts", typeColumn: nil, typeName: nil,
-                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,
+                displayLabel: "workout"
             )
-            if deleted > 0 {
-                print("[SyncService] Reconciled \(deleted) stale workout records")
-            }
         }
 
         return total
@@ -1980,18 +2133,32 @@ final class SyncService: ObservableObject {
         let diastolicType = HKObjectType.quantityType(forIdentifier: .bloodPressureDiastolic)!
 
         for batch in correlations.chunked(into: batchSize) {
+            // Build typed BP rows + parallel SQL values list in one pass so
+            // the EA fan-out below sees exactly the same rows MySQL did.
+            var bpRows: [HBBloodPressureRow] = []
             let values: [String] = batch.compactMap { corr -> String? in
                 guard
                     let sys = (corr.objects(for: systolicType) as? Set<HKQuantitySample>)?.first,
                     let dia = (corr.objects(for: diastolicType) as? Set<HKQuantitySample>)?.first
                 else { return nil }
 
-                let uuid     = MySQLEscape.quote(corr.uuid.uuidString)
-                let sysVal   = sys.quantity.doubleValue(for: .millimeterOfMercury())
-                let diaVal   = dia.quantity.doubleValue(for: .millimeterOfMercury())
-                let start    = MySQLEscape.quote(sqlDate(corr.startDate))
-                let src      = MySQLEscape.quote(corr.sourceRevision.source.name)
-                let device   = MySQLEscape.quote(corr.device?.name)
+                let sysVal = sys.quantity.doubleValue(for: .millimeterOfMercury())
+                let diaVal = dia.quantity.doubleValue(for: .millimeterOfMercury())
+
+                bpRows.append(HBBloodPressureRow(
+                    uuid: corr.uuid.uuidString,
+                    systolic: sysVal,
+                    diastolic: diaVal,
+                    start_date: sqlDate(corr.startDate),
+                    source_name: corr.sourceRevision.source.name,
+                    device_name: corr.device?.name,
+                    metadata: nil
+                ))
+
+                let uuid   = MySQLEscape.quote(corr.uuid.uuidString)
+                let start  = MySQLEscape.quote(sqlDate(corr.startDate))
+                let src    = MySQLEscape.quote(corr.sourceRevision.source.name)
+                let device = MySQLEscape.quote(corr.device?.name)
                 return "(\(uuid),\(sysVal),\(diaVal),\(start),\(src),\(device),NULL)"
             }
 
@@ -2003,17 +2170,16 @@ final class SyncService: ObservableObject {
             VALUES \(values.joined(separator: ","))
             """
             try await mysql.execute(sql)
+            if let eaWriter { try await eaWriter.writeBloodPressure(bpRows) }
             total += values.count
         }
 
         if let since = since, !syncedUUIDs.isEmpty {
-            let deleted = try await reconcileStaleRecords(
+            try await reconcileEverywhere(
                 table: "health_blood_pressure", typeColumn: nil, typeName: nil,
-                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,
+                displayLabel: "blood pressure"
             )
-            if deleted > 0 {
-                print("[SyncService] Reconciled \(deleted) stale blood pressure records")
-            }
         }
 
         return total
@@ -2057,17 +2223,34 @@ final class SyncService: ObservableObject {
             VALUES (\(uuid),\(cls),\(avgHR),\(freq),\(voltageJSON),\(start),\(src),NULL)
             """
             try await mysql.execute(sql)
+            if let eaWriter {
+                // Reconstruct the JSON string without SQL escaping for the EA payload.
+                let mvUnit = HKUnit(from: "mV")
+                let rawVoltages = voltages.compactMap { v -> Double? in
+                    v.quantity(for: .appleWatchSimilarToLeadI)?.doubleValue(for: mvUnit)
+                }
+                let voltageString = rawVoltages.isEmpty ? nil
+                    : "[" + rawVoltages.map { String(format: "%.6f", $0) }.joined(separator: ",") + "]"
+                try await eaWriter.writeEcg([HBEcgRow(
+                    uuid: ecg.uuid.uuidString,
+                    classification: ecg.classification.label,
+                    average_heart_rate: ecg.averageHeartRate?.doubleValue(for: HKUnit(from: "count/min")),
+                    sampling_frequency: ecg.samplingFrequency?.doubleValue(for: HKUnit(from: "Hz")),
+                    voltage_measurements: voltageString,
+                    start_date: sqlDate(ecg.startDate),
+                    source_name: ecg.sourceRevision.source.name,
+                    metadata: nil
+                )])
+            }
             total += 1
         }
 
-        if let since = since {
-            let deleted = try await reconcileStaleRecords(
+        if let since = since, !syncedUUIDs.isEmpty {
+            try await reconcileEverywhere(
                 table: "health_ecg", typeColumn: nil, typeName: nil,
-                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,
+                displayLabel: "ECG"
             )
-            if deleted > 0 {
-                print("[SyncService] Reconciled \(deleted) stale ECG records")
-            }
         }
 
         return total
@@ -2082,20 +2265,29 @@ final class SyncService: ObservableObject {
         var total = 0
         let syncedUUIDs = audiograms.map { $0.uuid.uuidString }
         var valueStrings: [String] = []
+        var pendingRows: [HBAudiogramRow] = []
         for ag in audiograms {
             let uuid  = MySQLEscape.quote(ag.uuid.uuidString)
             let start = MySQLEscape.quote(sqlDate(ag.startDate))
             let src   = MySQLEscape.quote(ag.sourceRevision.source.name)
 
-            let points = ag.sensitivityPoints.map { pt -> String in
+            let pointJSON = ag.sensitivityPoints.map { pt -> String in
                 let freq = pt.frequency.doubleValue(for: .hertz())
                 let leftDB  = pt.leftEarSensitivity?.doubleValue(for: HKUnit.decibelHearingLevel()) ?? 0
                 let rightDB = pt.rightEarSensitivity?.doubleValue(for: HKUnit.decibelHearingLevel()) ?? 0
                 return "{\"hz\":\(freq),\"l\":\(leftDB),\"r\":\(rightDB)}"
-            }
-            let jsonStr = MySQLEscape.quote("[\(points.joined(separator: ","))]")
+            }.joined(separator: ",")
+            let pointsArray = "[\(pointJSON)]"
+            let jsonStr = MySQLEscape.quote(pointsArray)
 
             valueStrings.append("(\(uuid),\(jsonStr),\(start),\(src),NULL)")
+            pendingRows.append(HBAudiogramRow(
+                uuid: ag.uuid.uuidString,
+                sensitivity_points: pointsArray,
+                start_date: sqlDate(ag.startDate),
+                source_name: ag.sourceRevision.source.name,
+                metadata: nil
+            ))
 
             if valueStrings.count >= batchSize {
                 try Task.checkCancellation()
@@ -2104,8 +2296,10 @@ final class SyncService: ObservableObject {
                   (uuid,sensitivity_points,start_date,source_name,metadata)
                 VALUES \(valueStrings.joined(separator: ","))
                 """)
+                if let eaWriter { try await eaWriter.writeAudiograms(pendingRows) }
                 total += valueStrings.count
                 valueStrings.removeAll()
+                pendingRows.removeAll()
             }
         }
         if !valueStrings.isEmpty {
@@ -2115,17 +2309,16 @@ final class SyncService: ObservableObject {
               (uuid,sensitivity_points,start_date,source_name,metadata)
             VALUES \(valueStrings.joined(separator: ","))
             """)
+            if let eaWriter { try await eaWriter.writeAudiograms(pendingRows) }
             total += valueStrings.count
         }
 
-        if let since = since {
-            let deleted = try await reconcileStaleRecords(
+        if let since = since, !syncedUUIDs.isEmpty {
+            try await reconcileEverywhere(
                 table: "health_audiograms", typeColumn: nil, typeName: nil,
-                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,
+                displayLabel: "audiogram"
             )
-            if deleted > 0 {
-                print("[SyncService] Reconciled \(deleted) stale audiogram records")
-            }
         }
 
         return total
@@ -2145,6 +2338,7 @@ final class SyncService: ObservableObject {
         var total = 0
         let syncedUUIDs = prescriptions.map { $0.uuid.uuidString }
         var valueStrings: [String] = []
+        var pendingRows: [HBVisionRow] = []
         for p in prescriptions {
             let uuid     = MySQLEscape.quote(p.uuid.uuidString)
             let start    = MySQLEscape.quote(sqlDate(p.startDate))
@@ -2155,42 +2349,57 @@ final class SyncService: ObservableObject {
             let bundle   = MySQLEscape.quote(p.sourceRevision.source.bundleIdentifier)
             let device   = MySQLEscape.quote(p.device?.name)
 
-            var rSphere = "NULL", rCyl = "NULL", rAxis = "NULL", rAdd = "NULL"
-            var rBase = "NULL", rDiam = "NULL"
-            var lSphere = "NULL", lCyl = "NULL", lAxis = "NULL", lAdd = "NULL"
-            var lBase = "NULL", lDiam = "NULL"
+            // Optional<Double> for each eye axis so we can build both the SQL
+            // value strings AND the typed HBVisionRow from one source of truth.
+            var rSphereD: Double?, rCylD: Double?, rAxisD: Double?, rAddD: Double?
+            var rBaseD: Double?, rDiamD: Double?
+            var lSphereD: Double?, lCylD: Double?, lAxisD: Double?, lAddD: Double?
+            var lBaseD: Double?, lDiamD: Double?
 
             if let glasses = p as? HKGlassesPrescription {
                 if let r = glasses.rightEye {
-                    rSphere = MySQLEscape.quoteDouble(r.sphere.doubleValue(for: diopterUnit))
-                    rCyl    = MySQLEscape.quoteDouble(r.cylinder?.doubleValue(for: diopterUnit))
-                    rAxis   = MySQLEscape.quoteDouble(r.axis?.doubleValue(for: degreeUnit))
-                    rAdd    = MySQLEscape.quoteDouble(r.addPower?.doubleValue(for: diopterUnit))
+                    rSphereD = r.sphere.doubleValue(for: diopterUnit)
+                    rCylD    = r.cylinder?.doubleValue(for: diopterUnit)
+                    rAxisD   = r.axis?.doubleValue(for: degreeUnit)
+                    rAddD    = r.addPower?.doubleValue(for: diopterUnit)
                 }
                 if let l = glasses.leftEye {
-                    lSphere = MySQLEscape.quoteDouble(l.sphere.doubleValue(for: diopterUnit))
-                    lCyl    = MySQLEscape.quoteDouble(l.cylinder?.doubleValue(for: diopterUnit))
-                    lAxis   = MySQLEscape.quoteDouble(l.axis?.doubleValue(for: degreeUnit))
-                    lAdd    = MySQLEscape.quoteDouble(l.addPower?.doubleValue(for: diopterUnit))
+                    lSphereD = l.sphere.doubleValue(for: diopterUnit)
+                    lCylD    = l.cylinder?.doubleValue(for: diopterUnit)
+                    lAxisD   = l.axis?.doubleValue(for: degreeUnit)
+                    lAddD    = l.addPower?.doubleValue(for: diopterUnit)
                 }
             } else if let contacts = p as? HKContactsPrescription {
                 if let r = contacts.rightEye {
-                    rSphere = MySQLEscape.quoteDouble(r.sphere.doubleValue(for: diopterUnit))
-                    rCyl    = MySQLEscape.quoteDouble(r.cylinder?.doubleValue(for: diopterUnit))
-                    rAxis   = MySQLEscape.quoteDouble(r.axis?.doubleValue(for: degreeUnit))
-                    rAdd    = MySQLEscape.quoteDouble(r.addPower?.doubleValue(for: diopterUnit))
-                    rBase   = MySQLEscape.quoteDouble(r.baseCurve?.doubleValue(for: mmUnit))
-                    rDiam   = MySQLEscape.quoteDouble(r.diameter?.doubleValue(for: mmUnit))
+                    rSphereD = r.sphere.doubleValue(for: diopterUnit)
+                    rCylD    = r.cylinder?.doubleValue(for: diopterUnit)
+                    rAxisD   = r.axis?.doubleValue(for: degreeUnit)
+                    rAddD    = r.addPower?.doubleValue(for: diopterUnit)
+                    rBaseD   = r.baseCurve?.doubleValue(for: mmUnit)
+                    rDiamD   = r.diameter?.doubleValue(for: mmUnit)
                 }
                 if let l = contacts.leftEye {
-                    lSphere = MySQLEscape.quoteDouble(l.sphere.doubleValue(for: diopterUnit))
-                    lCyl    = MySQLEscape.quoteDouble(l.cylinder?.doubleValue(for: diopterUnit))
-                    lAxis   = MySQLEscape.quoteDouble(l.axis?.doubleValue(for: degreeUnit))
-                    lAdd    = MySQLEscape.quoteDouble(l.addPower?.doubleValue(for: diopterUnit))
-                    lBase   = MySQLEscape.quoteDouble(l.baseCurve?.doubleValue(for: mmUnit))
-                    lDiam   = MySQLEscape.quoteDouble(l.diameter?.doubleValue(for: mmUnit))
+                    lSphereD = l.sphere.doubleValue(for: diopterUnit)
+                    lCylD    = l.cylinder?.doubleValue(for: diopterUnit)
+                    lAxisD   = l.axis?.doubleValue(for: degreeUnit)
+                    lAddD    = l.addPower?.doubleValue(for: diopterUnit)
+                    lBaseD   = l.baseCurve?.doubleValue(for: mmUnit)
+                    lDiamD   = l.diameter?.doubleValue(for: mmUnit)
                 }
             }
+
+            let rSphere = MySQLEscape.quoteDouble(rSphereD)
+            let rCyl    = MySQLEscape.quoteDouble(rCylD)
+            let rAxis   = MySQLEscape.quoteDouble(rAxisD)
+            let rAdd    = MySQLEscape.quoteDouble(rAddD)
+            let rBase   = MySQLEscape.quoteDouble(rBaseD)
+            let rDiam   = MySQLEscape.quoteDouble(rDiamD)
+            let lSphere = MySQLEscape.quoteDouble(lSphereD)
+            let lCyl    = MySQLEscape.quoteDouble(lCylD)
+            let lAxis   = MySQLEscape.quoteDouble(lAxisD)
+            let lAdd    = MySQLEscape.quoteDouble(lAddD)
+            let lBase   = MySQLEscape.quoteDouble(lBaseD)
+            let lDiam   = MySQLEscape.quoteDouble(lDiamD)
 
             valueStrings.append("""
             (\(uuid),\(start),\(end),\(prescType),
@@ -2198,6 +2407,29 @@ final class SyncService: ObservableObject {
                     \(lSphere),\(lCyl),\(lAxis),\(lAdd),\(lBase),\(lDiam),
                     \(expiry),\(src),\(bundle),\(device))
             """)
+
+            pendingRows.append(HBVisionRow(
+                uuid: p.uuid.uuidString,
+                start_date: sqlDate(p.startDate),
+                end_date: sqlDate(p.endDate),
+                prescription_type: Int(prescType),
+                right_eye_sphere: rSphereD,
+                right_eye_cylinder: rCylD,
+                right_eye_axis: rAxisD,
+                right_eye_add_power: rAddD,
+                right_eye_base_curve: rBaseD,
+                right_eye_diameter: rDiamD,
+                left_eye_sphere: lSphereD,
+                left_eye_cylinder: lCylD,
+                left_eye_axis: lAxisD,
+                left_eye_add_power: lAddD,
+                left_eye_base_curve: lBaseD,
+                left_eye_diameter: lDiamD,
+                expiration_date: p.expirationDate.map(sqlDate),
+                source_name: p.sourceRevision.source.name,
+                source_bundle_id: p.sourceRevision.source.bundleIdentifier,
+                device_name: p.device?.name
+            ))
 
             if valueStrings.count >= batchSize {
                 try Task.checkCancellation()
@@ -2211,8 +2443,10 @@ final class SyncService: ObservableObject {
                    expiration_date,source_name,source_bundle_id,device_name)
                 VALUES \(valueStrings.joined(separator: ","))
                 """)
+                if let eaWriter { try await eaWriter.writeVisionPrescriptions(pendingRows) }
                 total += valueStrings.count
                 valueStrings.removeAll()
+                pendingRows.removeAll()
             }
         }
         if !valueStrings.isEmpty {
@@ -2227,17 +2461,16 @@ final class SyncService: ObservableObject {
                expiration_date,source_name,source_bundle_id,device_name)
             VALUES \(valueStrings.joined(separator: ","))
             """)
+            if let eaWriter { try await eaWriter.writeVisionPrescriptions(pendingRows) }
             total += valueStrings.count
         }
 
-        if let since = since {
-            let deleted = try await reconcileStaleRecords(
+        if let since = since, !syncedUUIDs.isEmpty {
+            try await reconcileEverywhere(
                 table: "health_vision_prescriptions", typeColumn: nil, typeName: nil,
-                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,
+                displayLabel: "vision prescription"
             )
-            if deleted > 0 {
-                print("[SyncService] Reconciled \(deleted) stale vision prescription records")
-            }
         }
 
         return total
@@ -2260,6 +2493,7 @@ final class SyncService: ObservableObject {
         var total = 0
         let syncedUUIDs = samples.map { $0.uuid.uuidString }
         var valueStrings: [String] = []
+        var pendingRows: [HBStateOfMindRow] = []
         for sample in samples {
             let uuid         = MySQLEscape.quote(sample.uuid.uuidString)
             let start        = MySQLEscape.quote(sqlDate(sample.startDate))
@@ -2280,6 +2514,20 @@ final class SyncService: ObservableObject {
 
             valueStrings.append("(\(uuid),\(start),\(end),\(kind),\(valence),\(valenceClass),\(MySQLEscape.quote(labelsJSON)),\(MySQLEscape.quote(assocJSON)),\(src),\(bundle),\(device))")
 
+            pendingRows.append(HBStateOfMindRow(
+                uuid: sample.uuid.uuidString,
+                start_date: sqlDate(sample.startDate),
+                end_date: sqlDate(sample.endDate),
+                kind: kind,
+                valence: valence,
+                valence_classification: valenceClass,
+                labels_json: labelsJSON,
+                associations_json: assocJSON,
+                source_name: sample.sourceRevision.source.name,
+                source_bundle_id: sample.sourceRevision.source.bundleIdentifier,
+                device_name: sample.device?.name
+            ))
+
             if valueStrings.count >= batchSize {
                 try Task.checkCancellation()
                 try await mysql.execute("""
@@ -2288,8 +2536,10 @@ final class SyncService: ObservableObject {
                    labels_json,associations_json,source_name,source_bundle_id,device_name)
                 VALUES \(valueStrings.joined(separator: ","))
                 """)
+                if let eaWriter { try await eaWriter.writeStateOfMind(pendingRows) }
                 total += valueStrings.count
                 valueStrings.removeAll()
+                pendingRows.removeAll()
             }
         }
         if !valueStrings.isEmpty {
@@ -2300,17 +2550,16 @@ final class SyncService: ObservableObject {
                labels_json,associations_json,source_name,source_bundle_id,device_name)
             VALUES \(valueStrings.joined(separator: ","))
             """)
+            if let eaWriter { try await eaWriter.writeStateOfMind(pendingRows) }
             total += valueStrings.count
         }
 
-        if let since = since {
-            let deleted = try await reconcileStaleRecords(
+        if let since = since, !syncedUUIDs.isEmpty {
+            try await reconcileEverywhere(
                 table: "health_state_of_mind", typeColumn: nil, typeName: nil,
-                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,
+                displayLabel: "state of mind"
             )
-            if deleted > 0 {
-                print("[SyncService] Reconciled \(deleted) stale state of mind records")
-            }
         }
 
         return total

@@ -35,6 +35,7 @@ final class iCloudSyncService: ObservableObject {
         static let geofences      = "geofences_v1"
         static let placeCategories = "place_categories_v1"
         static let backupConfig   = "backup_config_v1"
+        static let eaConfig       = "ea_config_v1"
     }
 
     // Local UserDefaults keys (must match the keys used in each model file)
@@ -45,6 +46,7 @@ final class iCloudSyncService: ObservableObject {
         static let geofences       = "geofences_v1"
         static let placeCategories = "place_categories_v1"
         static let backupConfig    = "backupConfig_v1"
+        static let eaConfig        = "eaConfig_v1"
     }
 
     private static let deviceIDKey = "icloud_local_device_id"
@@ -217,6 +219,14 @@ final class iCloudSyncService: ObservableObject {
         }
     }
 
+    func pushEAConfig(_ config: EAConfig) {
+        guard iCloudSyncEnabled else { return }
+        if let data = try? JSONEncoder().encode(config) {
+            kv.set(data, forKey: KVKey.eaConfig)
+            kv.synchronize()
+        }
+    }
+
     // MARK: - Pull snapshot with merge (called from SyncState.restore())
 
     func pullSyncSnapshot() {
@@ -305,6 +315,9 @@ final class iCloudSyncService: ObservableObject {
         }
         if let data = kv.data(forKey: KVKey.backupConfig) {
             UserDefaults.standard.set(data, forKey: UDKey.backupConfig)
+        }
+        if let data = kv.data(forKey: KVKey.eaConfig) {
+            UserDefaults.standard.set(data, forKey: UDKey.eaConfig)
         }
     }
 }

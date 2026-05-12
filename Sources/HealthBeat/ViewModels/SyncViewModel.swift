@@ -20,6 +20,7 @@ final class SyncViewModel: ObservableObject {
         let state = SyncState()
         self.syncState = state
         self.syncService = SyncService(syncState: state)
+        self.syncService.attachEAIfConfigured()
         // Forward SyncState changes so SwiftUI views subscribed to this
         // view model re-render whenever any SyncState @Published property changes.
         state.objectWillChange
