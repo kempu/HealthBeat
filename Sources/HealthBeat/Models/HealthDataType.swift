@@ -114,8 +114,10 @@ enum HealthDataTypes {
         .init(id: HKQuantityTypeIdentifier.bodyTemperature.rawValue, displayName: "Body Temperature", category: .vitals, unit: .degreeCelsius(), unitString: "°C"),
         .init(id: HKQuantityTypeIdentifier.basalBodyTemperature.rawValue, displayName: "Basal Body Temperature", category: .vitals, unit: .degreeCelsius(), unitString: "°C"),
         .init(id: HKQuantityTypeIdentifier.respiratoryRate.rawValue, displayName: "Respiratory Rate", category: .vitals, unit: HKUnit(from: "count/min"), unitString: "breaths/min"),
-        .init(id: HKQuantityTypeIdentifier.bloodPressureSystolic.rawValue, displayName: "Systolic BP", category: .bloodPressure, unit: .millimeterOfMercury(), unitString: "mmHg"),
-        .init(id: HKQuantityTypeIdentifier.bloodPressureDiastolic.rawValue, displayName: "Diastolic BP", category: .bloodPressure, unit: .millimeterOfMercury(), unitString: "mmHg"),
+        // NOTE: bloodPressureSystolic / bloodPressureDiastolic are NOT registered here.
+        // BP samples are persisted to the dedicated `health_blood_pressure` correlation
+        // table via `SyncService.syncBloodPressure(...)`; the Data Browser surfaces them
+        // through the hardcoded "Blood Pressure" Section in DataBrowserView.
         .init(id: HKQuantityTypeIdentifier.peripheralPerfusionIndex.rawValue, displayName: "Peripheral Perfusion Index", category: .vitals, unit: .percent(), unitString: "%"),
         .init(id: HKQuantityTypeIdentifier.electrodermalActivity.rawValue, displayName: "Electrodermal Activity", category: .vitals, unit: HKUnit(from: "S"), unitString: "S"),
         // Mobility & Fitness
@@ -206,6 +208,20 @@ enum HealthDataTypes {
         // iOS 18+ — raw string IDs
         .init(id: "HKQuantityTypeIdentifierEstimatedWorkoutEffortScore", displayName: "Estimated Workout Effort", category: .activity, unit: HKUnit(from: "appleEffortScore"), unitString: "score"),
         .init(id: "HKQuantityTypeIdentifierWorkoutEffortScore", displayName: "Workout Effort Score", category: .activity, unit: HKUnit(from: "appleEffortScore"), unitString: "score"),
+        // iOS 17+ — Alcohol consumption count
+        .init(id: "HKQuantityTypeIdentifierNumberOfAlcoholicBeverages", displayName: "Alcoholic Beverages", category: .lab, unit: .count(), unitString: "count"),
+        // iOS 18+ — Hearing (active noise reduction by AirPods, etc.)
+        .init(id: "HKQuantityTypeIdentifierEnvironmentalSoundReduction", displayName: "Environmental Sound Reduction", category: .hearing, unit: HKUnit.decibelAWeightedSoundPressureLevel(), unitString: "dBASPL"),
+        // iOS 18+ — Apple Watch sleep-apnea signal (nightly disturbance count)
+        .init(id: "HKQuantityTypeIdentifierAppleSleepingBreathingDisturbances", displayName: "Sleeping Breathing Disturbances", category: .sleep, unit: .count(), unitString: "count"),
+        // iOS 18+ — Multi-sport workout distance & speed
+        .init(id: "HKQuantityTypeIdentifierDistanceCrossCountrySkiing", displayName: "Cross-Country Skiing Distance", category: .activity, unit: .meter(), unitString: "m"),
+        .init(id: "HKQuantityTypeIdentifierCrossCountrySkiingSpeed", displayName: "Cross-Country Skiing Speed", category: .activity, unit: HKUnit(from: "m/s"), unitString: "m/s"),
+        .init(id: "HKQuantityTypeIdentifierDistancePaddleSports", displayName: "Paddle Sports Distance", category: .activity, unit: .meter(), unitString: "m"),
+        .init(id: "HKQuantityTypeIdentifierPaddleSportsSpeed", displayName: "Paddle Sports Speed", category: .activity, unit: HKUnit(from: "m/s"), unitString: "m/s"),
+        .init(id: "HKQuantityTypeIdentifierDistanceRowing", displayName: "Rowing Distance", category: .activity, unit: .meter(), unitString: "m"),
+        .init(id: "HKQuantityTypeIdentifierRowingSpeed", displayName: "Rowing Speed", category: .activity, unit: HKUnit(from: "m/s"), unitString: "m/s"),
+        .init(id: "HKQuantityTypeIdentifierDistanceSkatingSports", displayName: "Skating Sports Distance", category: .activity, unit: .meter(), unitString: "m"),
     ]
 
     // MARK: Category types
@@ -326,6 +342,8 @@ enum HealthDataTypes {
               displayName: "Memory Lapse", category: .symptoms, valueLabels: [0: "Not Present", 1: "Present"]),
         .init(id: HKCategoryTypeIdentifier.nightSweats.rawValue,
               displayName: "Night Sweats", category: .symptoms, valueLabels: [0: "Not Present", 1: "Present"]),
+        .init(id: HKCategoryTypeIdentifier.sleepChanges.rawValue,
+              displayName: "Sleep Changes", category: .symptoms, valueLabels: [0: "Not Present", 1: "Present"]),
     ]
 
     // MARK: All read types for HealthKit permissions

@@ -56,6 +56,13 @@ final class DataBrowserViewModel: ObservableObject {
     @Published var medicationRecords: [MedicationRecord] = []
     @Published var locationRecords: [LocationTrackRecord] = []
     @Published var checkInRecords: [CheckInRecord] = []
+    @Published var bloodPressureRecords: [BloodPressureRecord] = []
+    @Published var ecgRecords: [ECGRecord] = []
+    @Published var audiogramRecords: [AudiogramRecord] = []
+    @Published var activitySummaryRecords: [ActivitySummaryRecord] = []
+    @Published var workoutRouteRecords: [WorkoutRouteRecord] = []
+    @Published var visionPrescriptionRecords: [VisionPrescriptionRecord] = []
+    @Published var stateOfMindRecords: [StateOfMindRecord] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var page = 0
@@ -97,11 +104,20 @@ final class DataBrowserViewModel: ObservableObject {
     }
 
     var totalLoaded: Int {
-        if selectedTypeID == "workout" { return workoutRecords.count }
-        if selectedTypeID == "medications" { return medicationRecords.count }
-        if selectedTypeID == "location_tracks" { return locationRecords.count }
-        if selectedTypeID == "location_geofence_events" { return checkInRecords.count }
-        return records.count
+        switch selectedTypeID {
+        case "workout":                  return workoutRecords.count
+        case "medications":              return medicationRecords.count
+        case "location_tracks":          return locationRecords.count
+        case "location_geofence_events": return checkInRecords.count
+        case "blood_pressure":           return bloodPressureRecords.count
+        case "ecg":                      return ecgRecords.count
+        case "audiograms":               return audiogramRecords.count
+        case "activity_summaries":       return activitySummaryRecords.count
+        case "workout_routes":           return workoutRouteRecords.count
+        case "vision_prescriptions":     return visionPrescriptionRecords.count
+        case "state_of_mind":            return stateOfMindRecords.count
+        default:                         return records.count
+        }
     }
 
     // MARK: - Reset filters
@@ -148,7 +164,12 @@ final class DataBrowserViewModel: ObservableObject {
 
     func loadSources(config: MySQLConfig) {
         guard let typeID = selectedTypeID else { return }
-        if typeID == "location_tracks" || typeID == "location_geofence_events" {
+        // Tables without a source_name column (or where filtering by source is not useful):
+        let noSourceTypes: Set<String> = [
+            "location_tracks", "location_geofence_events",
+            "activity_summaries", "workout_routes",
+        ]
+        if noSourceTypes.contains(typeID) {
             availableSources = []
             return
         }
@@ -160,18 +181,29 @@ final class DataBrowserViewModel: ObservableObject {
 
                 let table: String
                 let whereClause: String
-                if typeID == "workout" {
-                    table = "health_workouts"
-                    whereClause = ""
-                } else if typeID == "medications" {
-                    table = "health_medications"
-                    whereClause = ""
-                } else if HealthDataTypes.allCategoryTypes.contains(where: { $0.id == typeID }) {
-                    table = "health_category_samples"
-                    whereClause = "WHERE type = '\(MySQLEscape.escapeString(typeID))'"
-                } else {
-                    table = "health_quantity_samples"
-                    whereClause = "WHERE type = '\(MySQLEscape.escapeString(typeID))'"
+                switch typeID {
+                case "workout":
+                    table = "health_workouts"; whereClause = ""
+                case "medications":
+                    table = "health_medications"; whereClause = ""
+                case "blood_pressure":
+                    table = "health_blood_pressure"; whereClause = ""
+                case "ecg":
+                    table = "health_ecg"; whereClause = ""
+                case "audiograms":
+                    table = "health_audiograms"; whereClause = ""
+                case "vision_prescriptions":
+                    table = "health_vision_prescriptions"; whereClause = ""
+                case "state_of_mind":
+                    table = "health_state_of_mind"; whereClause = ""
+                default:
+                    if HealthDataTypes.allCategoryTypes.contains(where: { $0.id == typeID }) {
+                        table = "health_category_samples"
+                        whereClause = "WHERE type = '\(MySQLEscape.escapeString(typeID))'"
+                    } else {
+                        table = "health_quantity_samples"
+                        whereClause = "WHERE type = '\(MySQLEscape.escapeString(typeID))'"
+                    }
                 }
 
                 let rows = try await mysql.query("""
@@ -200,6 +232,13 @@ final class DataBrowserViewModel: ObservableObject {
         medicationRecords = []
         locationRecords = []
         checkInRecords = []
+        bloodPressureRecords = []
+        ecgRecords = []
+        audiogramRecords = []
+        activitySummaryRecords = []
+        workoutRouteRecords = []
+        visionPrescriptionRecords = []
+        stateOfMindRecords = []
 
         Task {
             let mysql = MySQLService()
@@ -260,6 +299,93 @@ final class DataBrowserViewModel: ObservableObject {
                         LIMIT \(pageSize) OFFSET \(page * pageSize)
                     """)
                     checkInRecords = rows.compactMap { CheckInRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
+                } else if typeID == "blood_pressure" {
+                    let filters = dateFilterSQL(prefix: "WHERE")
+                    let rows = try await mysql.query("""
+                        SELECT uuid, systolic, diastolic, start_date, source_name, device_name
+                        FROM health_blood_pressure
+                        \(filters.isEmpty ? "" : filters)
+                        ORDER BY start_date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    bloodPressureRecords = rows.compactMap { BloodPressureRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
+                } else if typeID == "ecg" {
+                    let filters = dateFilterSQL(prefix: "WHERE")
+                    let rows = try await mysql.query("""
+                        SELECT uuid, classification, average_heart_rate, sampling_frequency,
+                               voltage_measurements, start_date, source_name
+                        FROM health_ecg
+                        \(filters.isEmpty ? "" : filters)
+                        ORDER BY start_date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    ecgRecords = rows.compactMap { ECGRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
+                } else if typeID == "audiograms" {
+                    let filters = dateFilterSQL(prefix: "WHERE")
+                    let rows = try await mysql.query("""
+                        SELECT uuid, sensitivity_points, start_date, source_name
+                        FROM health_audiograms
+                        \(filters.isEmpty ? "" : filters)
+                        ORDER BY start_date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    audiogramRecords = rows.compactMap { AudiogramRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
+                } else if typeID == "activity_summaries" {
+                    // health_activity_summaries keys on `date`, not `start_date`/source_name
+                    var clauses: [String] = []
+                    if let from = filterDateFrom {
+                        let dayFmt = DateFormatter(); dayFmt.dateFormat = "yyyy-MM-dd"; dayFmt.locale = Locale(identifier: "en_US_POSIX")
+                        clauses.append("date >= '\(dayFmt.string(from: from))'")
+                    }
+                    if let to = filterDateTo {
+                        let dayFmt = DateFormatter(); dayFmt.dateFormat = "yyyy-MM-dd"; dayFmt.locale = Locale(identifier: "en_US_POSIX")
+                        clauses.append("date <= '\(dayFmt.string(from: to))'")
+                    }
+                    let whereClause = clauses.isEmpty ? "" : "WHERE " + clauses.joined(separator: " AND ")
+                    let rows = try await mysql.query("""
+                        SELECT date, active_energy_burned, active_energy_burned_goal,
+                               exercise_time_minutes, exercise_time_goal_minutes,
+                               stand_hours, stand_hours_goal
+                        FROM health_activity_summaries
+                        \(whereClause)
+                        ORDER BY date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    activitySummaryRecords = rows.compactMap { ActivitySummaryRecord.from(row: $0) }
+                } else if typeID == "workout_routes" {
+                    let filters = dateFilterSQL(prefix: "WHERE")
+                    let rows = try await mysql.query("""
+                        SELECT uuid, workout_uuid, start_date, location_count
+                        FROM health_workout_routes
+                        \(filters.isEmpty ? "" : filters)
+                        ORDER BY start_date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    workoutRouteRecords = rows.compactMap { WorkoutRouteRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
+                } else if typeID == "vision_prescriptions" {
+                    let filters = dateFilterSQL(prefix: "WHERE")
+                    let rows = try await mysql.query("""
+                        SELECT uuid, start_date, end_date, prescription_type,
+                               right_eye_sphere, right_eye_cylinder, right_eye_axis,
+                               left_eye_sphere, left_eye_cylinder, left_eye_axis,
+                               expiration_date, source_name
+                        FROM health_vision_prescriptions
+                        \(filters.isEmpty ? "" : filters)
+                        ORDER BY start_date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    visionPrescriptionRecords = rows.compactMap { VisionPrescriptionRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
+                } else if typeID == "state_of_mind" {
+                    let filters = dateFilterSQL(prefix: "WHERE")
+                    let rows = try await mysql.query("""
+                        SELECT uuid, start_date, end_date, kind, valence,
+                               valence_classification, labels_json, source_name
+                        FROM health_state_of_mind
+                        \(filters.isEmpty ? "" : filters)
+                        ORDER BY start_date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    stateOfMindRecords = rows.compactMap { StateOfMindRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
                 } else {
                     // Quantity type
                     let filters = dateFilterSQL()
@@ -346,6 +472,92 @@ final class DataBrowserViewModel: ObservableObject {
                         LIMIT \(pageSize) OFFSET \(page * pageSize)
                     """)
                     checkInRecords += rows.compactMap { CheckInRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
+                } else if typeID == "blood_pressure" {
+                    let filters = dateFilterSQL(prefix: "WHERE")
+                    let rows = try await mysql.query("""
+                        SELECT uuid, systolic, diastolic, start_date, source_name, device_name
+                        FROM health_blood_pressure
+                        \(filters.isEmpty ? "" : filters)
+                        ORDER BY start_date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    bloodPressureRecords += rows.compactMap { BloodPressureRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
+                } else if typeID == "ecg" {
+                    let filters = dateFilterSQL(prefix: "WHERE")
+                    let rows = try await mysql.query("""
+                        SELECT uuid, classification, average_heart_rate, sampling_frequency,
+                               voltage_measurements, start_date, source_name
+                        FROM health_ecg
+                        \(filters.isEmpty ? "" : filters)
+                        ORDER BY start_date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    ecgRecords += rows.compactMap { ECGRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
+                } else if typeID == "audiograms" {
+                    let filters = dateFilterSQL(prefix: "WHERE")
+                    let rows = try await mysql.query("""
+                        SELECT uuid, sensitivity_points, start_date, source_name
+                        FROM health_audiograms
+                        \(filters.isEmpty ? "" : filters)
+                        ORDER BY start_date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    audiogramRecords += rows.compactMap { AudiogramRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
+                } else if typeID == "activity_summaries" {
+                    var clauses: [String] = []
+                    if let from = filterDateFrom {
+                        let dayFmt = DateFormatter(); dayFmt.dateFormat = "yyyy-MM-dd"; dayFmt.locale = Locale(identifier: "en_US_POSIX")
+                        clauses.append("date >= '\(dayFmt.string(from: from))'")
+                    }
+                    if let to = filterDateTo {
+                        let dayFmt = DateFormatter(); dayFmt.dateFormat = "yyyy-MM-dd"; dayFmt.locale = Locale(identifier: "en_US_POSIX")
+                        clauses.append("date <= '\(dayFmt.string(from: to))'")
+                    }
+                    let whereClause = clauses.isEmpty ? "" : "WHERE " + clauses.joined(separator: " AND ")
+                    let rows = try await mysql.query("""
+                        SELECT date, active_energy_burned, active_energy_burned_goal,
+                               exercise_time_minutes, exercise_time_goal_minutes,
+                               stand_hours, stand_hours_goal
+                        FROM health_activity_summaries
+                        \(whereClause)
+                        ORDER BY date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    activitySummaryRecords += rows.compactMap { ActivitySummaryRecord.from(row: $0) }
+                } else if typeID == "workout_routes" {
+                    let filters = dateFilterSQL(prefix: "WHERE")
+                    let rows = try await mysql.query("""
+                        SELECT uuid, workout_uuid, start_date, location_count
+                        FROM health_workout_routes
+                        \(filters.isEmpty ? "" : filters)
+                        ORDER BY start_date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    workoutRouteRecords += rows.compactMap { WorkoutRouteRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
+                } else if typeID == "vision_prescriptions" {
+                    let filters = dateFilterSQL(prefix: "WHERE")
+                    let rows = try await mysql.query("""
+                        SELECT uuid, start_date, end_date, prescription_type,
+                               right_eye_sphere, right_eye_cylinder, right_eye_axis,
+                               left_eye_sphere, left_eye_cylinder, left_eye_axis,
+                               expiration_date, source_name
+                        FROM health_vision_prescriptions
+                        \(filters.isEmpty ? "" : filters)
+                        ORDER BY start_date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    visionPrescriptionRecords += rows.compactMap { VisionPrescriptionRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
+                } else if typeID == "state_of_mind" {
+                    let filters = dateFilterSQL(prefix: "WHERE")
+                    let rows = try await mysql.query("""
+                        SELECT uuid, start_date, end_date, kind, valence,
+                               valence_classification, labels_json, source_name
+                        FROM health_state_of_mind
+                        \(filters.isEmpty ? "" : filters)
+                        ORDER BY start_date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    stateOfMindRecords += rows.compactMap { StateOfMindRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
                 } else {
                     let filters = dateFilterSQL()
                     let rows = try await mysql.query("""

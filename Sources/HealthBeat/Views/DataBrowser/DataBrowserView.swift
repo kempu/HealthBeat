@@ -35,6 +35,29 @@ struct DataBrowserView: View {
         searchText.isEmpty || "Check-ins".localizedCaseInsensitiveContains(searchText)
     }
 
+    private func matchesSearch(_ label: String) -> Bool {
+        searchText.isEmpty || label.localizedCaseInsensitiveContains(searchText)
+    }
+
+    // Special record families that live in dedicated MySQL tables (one row per family).
+    // Each entry is (selectedTypeID, displayName, systemImage, sectionTitle).
+    private struct SpecialRecordType {
+        let typeID: String
+        let title: String
+        let icon: String
+        let sectionTitle: String
+    }
+
+    private let specialRecordTypes: [SpecialRecordType] = [
+        .init(typeID: "blood_pressure",       title: "Blood Pressure",        icon: "drop.fill",                          sectionTitle: "Blood Pressure"),
+        .init(typeID: "ecg",                  title: "ECG Recordings",        icon: "waveform.path.ecg.rectangle.fill",   sectionTitle: "ECG"),
+        .init(typeID: "audiograms",           title: "Audiograms",            icon: "ear.badge.waveform",                 sectionTitle: "Audiograms"),
+        .init(typeID: "activity_summaries",   title: "Activity Summaries",    icon: "chart.bar.fill",                     sectionTitle: "Activity Summaries"),
+        .init(typeID: "workout_routes",       title: "Workout Routes",        icon: "map.fill",                           sectionTitle: "Workout Routes"),
+        .init(typeID: "vision_prescriptions", title: "Vision Prescriptions",  icon: "eyeglasses",                         sectionTitle: "Vision Prescriptions"),
+        .init(typeID: "state_of_mind",        title: "State of Mind",         icon: "brain.head.profile",                 sectionTitle: "State of Mind"),
+    ]
+
     var body: some View {
         NavigationStack {
             List {
@@ -100,6 +123,24 @@ struct DataBrowserView: View {
                     }
                 }
 
+                // Dedicated-table record families (Blood Pressure, ECG, Audiograms, etc.)
+                ForEach(specialRecordTypes, id: \.typeID) { entry in
+                    if matchesSearch(entry.title) {
+                        Section(entry.sectionTitle) {
+                            NavigationLink {
+                                specialRecordDestination(for: entry.typeID)
+                                    .onAppear {
+                                        vm.resetFilters()
+                                        vm.selectedTypeID = entry.typeID
+                                        vm.loadData(config: config)
+                                    }
+                            } label: {
+                                Label(entry.title, systemImage: entry.icon)
+                            }
+                        }
+                    }
+                }
+
                 // Category types grouped
                 ForEach(HealthCategory.allCases) { cat in
                     let qtypes = filteredQuantityTypes.filter { $0.category == cat }
@@ -139,6 +180,20 @@ struct DataBrowserView: View {
             .searchable(text: $searchText, prompt: "Search health data types")
             .navigationTitle("Data Browser")
             .onAppear { config = MySQLConfig.load() }
+        }
+    }
+
+    @ViewBuilder
+    private func specialRecordDestination(for typeID: String) -> some View {
+        switch typeID {
+        case "blood_pressure":       BloodPressureDataView(vm: vm, config: config)
+        case "ecg":                  ECGDataView(vm: vm, config: config)
+        case "audiograms":           AudiogramDataView(vm: vm, config: config)
+        case "activity_summaries":   ActivitySummaryDataView(vm: vm, config: config)
+        case "workout_routes":       WorkoutRouteDataView(vm: vm, config: config)
+        case "vision_prescriptions": VisionPrescriptionDataView(vm: vm, config: config)
+        case "state_of_mind":        StateOfMindDataView(vm: vm, config: config)
+        default:                     EmptyView()
         }
     }
 }

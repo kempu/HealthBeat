@@ -68,6 +68,13 @@
 		AABB0000000000000002003F /* SyncHealthDataIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001003E /* SyncHealthDataIntent.swift */; };
 		AABB00000000000000020040 /* FullSyncHealthDataIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001003F /* FullSyncHealthDataIntent.swift */; };
 		AABB00000000000000020041 /* HealthBeatShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010040 /* HealthBeatShortcuts.swift */; };
+		AABB00000000000000020042 /* BloodPressureDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010041 /* BloodPressureDataView.swift */; };
+		AABB00000000000000020043 /* ECGDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010042 /* ECGDataView.swift */; };
+		AABB00000000000000020044 /* AudiogramDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010043 /* AudiogramDataView.swift */; };
+		AABB00000000000000020045 /* ActivitySummaryDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010044 /* ActivitySummaryDataView.swift */; };
+		AABB00000000000000020046 /* WorkoutRouteDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010045 /* WorkoutRouteDataView.swift */; };
+		AABB00000000000000020047 /* VisionPrescriptionDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010046 /* VisionPrescriptionDataView.swift */; };
+		AABB00000000000000020048 /* StateOfMindDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010047 /* StateOfMindDataView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -159,6 +166,13 @@
 		AABB0000000000000001003E /* SyncHealthDataIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncHealthDataIntent.swift; sourceTree = "<group>"; };
 		AABB0000000000000001003F /* FullSyncHealthDataIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullSyncHealthDataIntent.swift; sourceTree = "<group>"; };
 		AABB00000000000000010040 /* HealthBeatShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthBeatShortcuts.swift; sourceTree = "<group>"; };
+		AABB00000000000000010041 /* BloodPressureDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BloodPressureDataView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010042 /* ECGDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ECGDataView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010043 /* AudiogramDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudiogramDataView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010044 /* ActivitySummaryDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivitySummaryDataView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010045 /* WorkoutRouteDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutRouteDataView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010046 /* VisionPrescriptionDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisionPrescriptionDataView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010047 /* StateOfMindDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateOfMindDataView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -287,6 +301,13 @@
 				AABB00000000000000010034 /* MedicationDataView.swift */,
 				AABB00000000000000010038 /* LocationTrackDataView.swift */,
 				AABB00000000000000010039 /* CheckInDataView.swift */,
+				AABB00000000000000010041 /* BloodPressureDataView.swift */,
+				AABB00000000000000010042 /* ECGDataView.swift */,
+				AABB00000000000000010043 /* AudiogramDataView.swift */,
+				AABB00000000000000010044 /* ActivitySummaryDataView.swift */,
+				AABB00000000000000010045 /* WorkoutRouteDataView.swift */,
+				AABB00000000000000010046 /* VisionPrescriptionDataView.swift */,
+				AABB00000000000000010047 /* StateOfMindDataView.swift */,
 			);
 			path = DataBrowser;
 			sourceTree = "<group>";
@@ -510,6 +531,13 @@
 				AABB0000000000000002003F /* SyncHealthDataIntent.swift in Sources */,
 				AABB00000000000000020040 /* FullSyncHealthDataIntent.swift in Sources */,
 				AABB00000000000000020041 /* HealthBeatShortcuts.swift in Sources */,
+				AABB00000000000000020042 /* BloodPressureDataView.swift in Sources */,
+				AABB00000000000000020043 /* ECGDataView.swift in Sources */,
+				AABB00000000000000020044 /* AudiogramDataView.swift in Sources */,
+				AABB00000000000000020045 /* ActivitySummaryDataView.swift in Sources */,
+				AABB00000000000000020046 /* WorkoutRouteDataView.swift in Sources */,
+				AABB00000000000000020047 /* VisionPrescriptionDataView.swift in Sources */,
+				AABB00000000000000020048 /* StateOfMindDataView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
