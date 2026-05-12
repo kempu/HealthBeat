@@ -1762,20 +1762,36 @@ final class SyncService: ObservableObject {
             typeFilter = ""
         }
 
-        var totalDeleted: UInt64 = 0
-        // Batch NOT IN clauses to avoid exceeding MySQL max_allowed_packet
+        // Stage the valid UUID set into a temporary table so the DELETE evaluates
+        // every UUID at once. Chunking the UUIDs across separate `NOT IN` DELETEs
+        // is incorrect — each chunk would delete rows whose UUIDs live in the other
+        // chunks, wiping the very records we just inserted.
+        let tmpTable = "hb_reconcile_valid_uuids"
+        try await mysql.execute("DROP TEMPORARY TABLE IF EXISTS `\(tmpTable)`")
+        try await mysql.execute("""
+        CREATE TEMPORARY TABLE `\(tmpTable)` (
+            uuid VARCHAR(36) NOT NULL PRIMARY KEY
+        )
+        """)
+
+        // Insert in chunks to stay under max_allowed_packet.
         for chunk in validUUIDs.chunked(into: 1000) {
-            let uuidList = chunk.map { MySQLEscape.quote($0) }.joined(separator: ",")
-            let sql = """
-            DELETE FROM `\(table)`
-            WHERE start_date >= \(sinceStr)
-              AND start_date <= \(untilStr)
-              \(typeFilter)
-              AND uuid NOT IN (\(uuidList))
-            """
-            totalDeleted += try await mysql.execute(sql)
+            let values = chunk.map { "(\(MySQLEscape.quote($0)))" }.joined(separator: ",")
+            try await mysql.execute("INSERT IGNORE INTO `\(tmpTable)` (uuid) VALUES \(values)")
         }
-        return Int(totalDeleted)
+
+        let deleted = try await mysql.execute("""
+        DELETE FROM `\(table)`
+        WHERE start_date >= \(sinceStr)
+          AND start_date <= \(untilStr)
+          \(typeFilter)
+          AND uuid NOT IN (SELECT uuid FROM `\(tmpTable)`)
+        """)
+
+        // Free the temp rows; the table itself is connection-scoped and goes away on disconnect.
+        _ = try? await mysql.execute("DROP TEMPORARY TABLE IF EXISTS `\(tmpTable)`")
+
+        return Int(deleted)
     }
 
     // MARK: - Quantity sync
