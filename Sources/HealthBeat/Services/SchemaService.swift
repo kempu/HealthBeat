@@ -403,7 +403,12 @@ struct SchemaService {
 
     // MARK: - Destructive operations
 
-    /// Deletes all rows from every health data table. Schema and migrations are preserved.
+    /// Empties every health data table. Schema and migrations are preserved.
+    ///
+    /// Uses `TRUNCATE`, not `DELETE`: a `DELETE FROM` on millions of rows is slow,
+    /// acquires per-row locks, and builds a large undo log — which trips
+    /// "Lock wait timeout exceeded" (especially if a sync is mid-insert).
+    /// `TRUNCATE` is a near-instant DDL that drops the table contents wholesale.
     static func deleteAllHealthData(mysql: MySQLService) async throws {
         let tables = [
             "health_quantity_samples", "health_category_samples", "health_workouts",
@@ -412,7 +417,7 @@ struct SchemaService {
             "health_vision_prescriptions", "health_state_of_mind", "health_sync_log",
         ]
         for table in tables {
-            try await mysql.execute("DELETE FROM \(table)")
+            try await mysql.execute("TRUNCATE TABLE `\(table)`")
         }
     }
 

@@ -248,7 +248,16 @@ final class iCloudSyncService: ObservableObject {
     private func mergeSnapshots(local: PersistedSnapshot, remote: PersistedSnapshot) -> PersistedSnapshot {
         let mergedLastSync: Date? = maxDate(local.lastSyncDate, remote.lastSyncDate)
         let mergedTotal: Int? = maxOptional(local.totalRecords, remote.totalRecords)
-        let mergedFullSync = (local.hasCompletedFullSync ?? false) || (remote.hasCompletedFullSync ?? false)
+
+        // Per-destination full-sync baselines, merged last-writer-wins by each
+        // destination's change-timestamp so a reset (done=false, newer) overrides
+        // an older completion. A legacy snapshot (single `hasCompletedFullSync`,
+        // no per-destination fields) is first normalized to a MySQL-only baseline
+        // — the dump-based EA full sync never shipped, so any prior completion
+        // maps to MySQL and EA starts un-baselined.
+        let lb = Self.normalizedBaselines(local), rb = Self.normalizedBaselines(remote)
+        let (mDone, mAt) = Self.lww(lb.mDone, lb.mAt, rb.mDone, rb.mAt)
+        let (eDone, eAt) = Self.lww(lb.eDone, lb.eAt, rb.eDone, rb.eAt)
 
         var categoryMap: [String: PersistedCategory] = [:]
         for cat in local.categories { categoryMap[cat.id] = cat }
@@ -265,22 +274,47 @@ final class iCloudSyncService: ObservableObject {
             }
         }
 
-        // Prefer local cursor state — backfill/incremental progress is device-specific
+        // Prefer local cursor state — incremental progress is device-specific
         // and should not be discarded when iCloud delivers remote changes from another session.
         // Fall back to remote if local has none (e.g. fresh install restoring from iCloud).
-        let mergedCursors = local.backfillCursors ?? remote.backfillCursors
-        let mergedAnchor = local.backfillAnchorDate ?? remote.backfillAnchorDate
         let mergedIncrementalCursors = local.incrementalCursors ?? remote.incrementalCursors
 
         return PersistedSnapshot(
             lastSyncDate: mergedLastSync,
             categories: Array(categoryMap.values),
             totalRecords: mergedTotal,
-            hasCompletedFullSync: mergedFullSync,
-            backfillCursors: mergedCursors,
-            backfillAnchorDate: mergedAnchor,
-            incrementalCursors: mergedIncrementalCursors
+            incrementalCursors: mergedIncrementalCursors,
+            mysqlBaselineDone: mDone,
+            mysqlBaselineAt: mAt,
+            eaBaselineDone: eDone,
+            eaBaselineAt: eAt,
+            hasCompletedFullSync: nil,   // legacy — no longer written
+            fullSyncStateAt: nil
         )
+    }
+
+    /// Per-destination baselines for a snapshot, normalizing a legacy single-flag
+    /// snapshot to a MySQL-only baseline (see `mergeSnapshots`).
+    private static func normalizedBaselines(_ s: PersistedSnapshot)
+        -> (mDone: Bool, mAt: Date?, eDone: Bool, eAt: Date?) {
+        if s.mysqlBaselineDone != nil || s.eaBaselineDone != nil {
+            return (s.mysqlBaselineDone ?? false, s.mysqlBaselineAt,
+                    s.eaBaselineDone ?? false, s.eaBaselineAt)
+        }
+        let hadMySQL = (s.hasCompletedFullSync ?? false)
+            || s.lastSyncDate != nil || (s.incrementalCursors?.isEmpty == false)
+        return (hadMySQL, hadMySQL ? (s.fullSyncStateAt ?? s.lastSyncDate) : nil, false, nil)
+    }
+
+    /// Last-writer-wins merge of one `(done, at)` baseline pair. With both
+    /// timestamps the newer wins; with one, that side wins; with neither, OR.
+    private static func lww(_ lDone: Bool, _ lAt: Date?, _ rDone: Bool, _ rAt: Date?) -> (Bool, Date?) {
+        switch (lAt, rAt) {
+        case let (l?, r?):   return (l >= r ? lDone : rDone, l >= r ? l : r)
+        case (.some, .none): return (lDone, lAt)
+        case (.none, .some): return (rDone, rAt)
+        case (.none, .none): return (lDone || rDone, nil)
+        }
     }
 
     private func maxDate(_ a: Date?, _ b: Date?) -> Date? {

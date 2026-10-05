@@ -26,6 +26,13 @@ struct MySQLSettingsView: View {
                 }
             }
 
+            Section {
+                Toggle("Enable MySQL destination", isOn: $vm.config.enabled)
+            } footer: {
+                Text("When off, syncs skip the direct MySQL write entirely and use only the enabled destinations (e.g. EA). Both can be on at once.")
+                    .font(.caption)
+            }
+
             Section("Connection") {
                 LabeledContent("Host") {
                     TextField("192.168.1.1", text: $vm.config.host)

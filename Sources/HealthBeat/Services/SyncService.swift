@@ -1,6 +1,7 @@
 import ActivityKit
 import BackgroundTasks
 import CoreLocation
+import CryptoKit
 import Foundation
 import HealthKit
 import UIKit
@@ -33,18 +34,22 @@ final class SyncService: ObservableObject {
     /// Optional secondary destination that receives the same typed batches
     /// as MySQL. Today this is set to an `EABackendWriter` by
     /// `BackgroundSyncManager` when the user has enabled the EA destination
-    /// in Settings. Set BEFORE `runIncrementalSync` / `runHistoricalBackfill`;
+    /// in Settings. Set BEFORE `runIncrementalSync` / `runFullSync`;
     /// nil = MySQL-only. Errors thrown by the writer propagate up exactly
     /// like MySQL errors do — the offending pass is logged as failed and
     /// the cursors are NOT advanced, so the next pass retries cleanly.
     var eaWriter: BackendWriter?
 
-    /// Convenience: if the user has configured an EA destination in Settings,
-    /// attach an `EABackendWriter` so this sync pass mirrors every batch to
-    /// EA in addition to MySQL. No-op when EA is not configured/enabled.
+    /// Convenience: attach an `EABackendWriter` so an INCREMENTAL pass mirrors
+    /// every batch to EA in addition to MySQL. Attached only when EA is
+    /// configured AND already has a full-sync baseline — incremental on top of
+    /// an un-baselined EA would leave a permanent history gap, so an
+    /// un-baselined EA is skipped here and surfaced as "needs full sync" in the
+    /// UI instead. No-op when EA is not configured. (The full-sync path delivers
+    /// to EA via the dump uploader, independent of this writer.)
     func attachEAIfConfigured() {
         let eaCfg = EAConfig.load()
-        if eaCfg.isConfigured {
+        if eaCfg.isConfigured && syncState.eaBaselineDone {
             eaWriter = EABackendWriter(config: eaCfg)
         }
     }
@@ -55,7 +60,7 @@ final class SyncService: ObservableObject {
     // When true, never create or update a Live Activity (used for observer-triggered real-time syncs)
     var suppressLiveActivity = false
 
-    /// Set by the caller before `runHistoricalBackfill` so the background-task expiry
+    /// Set by the caller before a sync so the background-task expiry
     /// handler can cancel the Swift Task when iOS reclaims background time.
     var taskForCancellation: Task<Void, Never>?
 
@@ -64,10 +69,27 @@ final class SyncService: ObservableObject {
     // from competing for row locks on the same tables.
     @MainActor static private(set) var isSyncRunning = false {
         didSet {
-            syncRunningStartDate = isSyncRunning ? Date() : nil
+            // Seed the activity timestamp on start; `noteSyncActivity` refreshes it as the
+            // sync makes progress so a long-but-healthy run isn't mistaken for a stalled one.
+            syncActivityDate = isSyncRunning ? Date() : nil
         }
     }
-    @MainActor static private var syncRunningStartDate: Date?
+    /// Timestamp of the most recent sync progress (start, then refreshed by `noteSyncActivity`).
+    @MainActor static private var syncActivityDate: Date?
+
+    /// Heartbeat. Call from the sync loops on each unit of progress so a legitimately long
+    /// sync (e.g. a multi-year full backfill) keeps `isSyncEffectivelyRunning` true and a
+    /// second sync instance never opens a competing MySQL connection — the concurrency that
+    /// produced "Lock wait timeout exceeded". No-op when no sync is running.
+    @MainActor static func noteSyncActivity() {
+        if isSyncRunning { syncActivityDate = Date() }
+    }
+
+    /// Lets the dump deliver phases (defined in `DumpDrain`/`DumpUpload`
+    /// extensions, which can't reach the `private(set)` setter) participate in
+    /// the global single-sync guard so a concurrent incremental sync doesn't
+    /// open a competing MySQL connection.
+    @MainActor static func setGlobalSyncRunning(_ running: Bool) { isSyncRunning = running }
 
     /// Tracks the last time a full 7-day lookback sweep was performed.
     /// Resets on app termination (non-persisted) — first sync after launch always does a full sweep.
@@ -76,13 +98,14 @@ final class SyncService: ObservableObject {
     /// Throttle for cleanupStaleLogEntries — no need to run every 3 minutes.
     @MainActor private static var lastStaleCleanup: Date = .distantPast
 
-    /// Returns true if a sync is actively running. If the flag has been true for longer
-    /// than `timeout` seconds (e.g. due to a suspended/frozen task), it's considered stale
-    /// and force-reset to false so background syncs aren't blocked indefinitely.
+    /// Returns true if a sync is actively running. If no progress has been reported for longer
+    /// than `timeout` seconds (e.g. a suspended/frozen/crashed task that never cleared the flag),
+    /// it's considered stale and force-reset to false so background syncs aren't blocked
+    /// indefinitely. Healthy syncs call `noteSyncActivity` well within `timeout`.
     @MainActor static func isSyncEffectivelyRunning(timeout: TimeInterval = 300) -> Bool {
         guard isSyncRunning else { return false }
-        if let started = syncRunningStartDate, Date().timeIntervalSince(started) > timeout {
-            print("[SyncService] Resetting stale isSyncRunning flag (started \(started))")
+        if let last = syncActivityDate, Date().timeIntervalSince(last) > timeout {
+            print("[SyncService] Resetting stale isSyncRunning flag (last activity \(last))")
             isSyncRunning = false
             return false
         }
@@ -169,6 +192,9 @@ final class SyncService: ObservableObject {
     // Live Activity
     private var liveActivity: Activity<SyncActivityAttributes>?
     private var lastLiveActivityUpdate: Date = .distantPast
+    /// Records exported in the most recent full-sync export — used for the final
+    /// "Synced N records" live-activity state when delivery completes.
+    private(set) var lastExportRecordCount = 0
 
     init(syncState: SyncState) {
         self.syncState = syncState
@@ -235,10 +261,11 @@ final class SyncService: ObservableObject {
         }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         let initial = SyncActivityAttributes.ContentState(
-            phase: "Connecting",
-            operation: "Connecting to MySQL…",
+            phase: "Starting",
+            operation: isFullSync ? "Preparing full sync…" : "Starting sync…",
             recordsInserted: 0,
-            isFullSync: isFullSync
+            isFullSync: isFullSync,
+            progress: 0
         )
         do {
             liveActivity = try Activity.request(
@@ -251,7 +278,7 @@ final class SyncService: ObservableObject {
         }
     }
 
-    private func updateLiveActivity(phase: String, operation: String, records: Int) {
+    func updateLiveActivity(phase: String, operation: String, records: Int? = nil, progress: Double? = nil) {
         guard !suppressLiveActivity else { return }
         // If no activity yet and we're now in the foreground, try to create one.
         // This covers the case where the user opens the app mid-background-sync.
@@ -266,8 +293,9 @@ final class SyncService: ObservableObject {
         let state = SyncActivityAttributes.ContentState(
             phase: phase,
             operation: operation,
-            recordsInserted: records,
-            isFullSync: isFullSync
+            recordsInserted: records ?? activity.content.state.recordsInserted,
+            isFullSync: isFullSync,
+            progress: progress ?? syncState.overallProgress
         )
         let content = ActivityContent(state: state, staleDate: nil)
         // Await the update directly to ensure it completes before moving on
@@ -276,7 +304,7 @@ final class SyncService: ObservableObject {
         }
     }
 
-    private func endLiveActivity(totalRecords: Int) {
+    func endLiveActivity(totalRecords: Int) {
         guard !suppressLiveActivity else { return }
         let activity = liveActivity ?? Activity<SyncActivityAttributes>.activities.first
         guard let activity else { return }
@@ -285,7 +313,8 @@ final class SyncService: ObservableObject {
             phase: "Done",
             operation: "Synced \(totalRecords.formatted()) records",
             recordsInserted: totalRecords,
-            isFullSync: isFullSync
+            isFullSync: isFullSync,
+            progress: 1.0
         )
         let finalContent = ActivityContent(state: finalState, staleDate: nil)
         // Capture reference and nil out immediately to prevent double-end
@@ -346,64 +375,68 @@ final class SyncService: ObservableObject {
             issues.append(.somePermissionsDenied(count: notRequestedTypes.count))
         }
 
-        // Check database schema
-        do {
-            let mysql = MySQLService()
-            try await mysql.connect(config: config)
-            let requiredTables = [
-                "health_quantity_samples", "health_category_samples", "health_workouts",
-                "health_blood_pressure", "health_ecg", "health_audiograms",
-                "health_activity_summaries", "health_workout_routes", "health_medications",
-                "health_vision_prescriptions", "health_state_of_mind",
-                "health_sync_log", "location_tracks", "location_geofence_events"
-            ]
-            var missingTables: [String] = []
-            for table in requiredTables {
-                let exists = await SchemaService.tableExists(table, mysql: mysql)
-                if !exists { missingTables.append(table) }
-            }
-            await mysql.disconnect()
+        // Check database schema — only when the MySQL destination is enabled.
+        if config.enabled {
+            do {
+                let mysql = MySQLService()
+                try await mysql.connect(config: config)
+                let requiredTables = [
+                    "health_quantity_samples", "health_category_samples", "health_workouts",
+                    "health_blood_pressure", "health_ecg", "health_audiograms",
+                    "health_activity_summaries", "health_workout_routes", "health_medications",
+                    "health_vision_prescriptions", "health_state_of_mind",
+                    "health_sync_log", "location_tracks", "location_geofence_events"
+                ]
+                var missingTables: [String] = []
+                for table in requiredTables {
+                    let exists = await SchemaService.tableExists(table, mysql: mysql)
+                    if !exists { missingTables.append(table) }
+                }
+                await mysql.disconnect()
 
-            if !missingTables.isEmpty {
-                issues.append(.missingDatabaseTables(tables: missingTables))
+                if !missingTables.isEmpty {
+                    issues.append(.missingDatabaseTables(tables: missingTables))
+                }
+            } catch {
+                issues.append(.databaseConnectionFailed(error.localizedDescription))
             }
-        } catch {
-            issues.append(.databaseConnectionFailed(error.localizedDescription))
         }
 
         return issues
     }
 
-    // MARK: - Full sync
-
-    func runFullSync(config: MySQLConfig) async {
-        await runHistoricalBackfill(config: config)
-    }
-
     // MARK: - Single-category sync
 
+    /// Re-syncs one category over all history to the enabled destinations. Used
+    /// by the per-category "Sync" button. Calls the leaf `sync*` methods directly
+    /// over the full range (no windowing); `since: nil` means no reconcile and no
+    /// UUID accumulation, so even a dense category stays memory-bounded. MySQL is
+    /// skipped when its destination is disabled (EA still receives the batch).
     func runSingleCategorySync(categoryID: String, config: MySQLConfig) async {
         guard !syncState.isAnySyncRunning else { return }
+        let mysqlEnabled = config.enabled
         syncState.isFullSyncRunning = true
-        SyncService.isSyncRunning = true
+        syncState.fullSyncPhase = .idle   // per-category: recalcOverall drives progress
+        SyncService.setGlobalSyncRunning(true)
         defer {
-            SyncService.isSyncRunning = false
+            SyncService.setGlobalSyncRunning(false)
+            syncState.isFullSyncRunning = false
             syncState.currentSyncCategoryIDs = []
         }
         syncState.errorMessage = nil
-        syncState.currentOperation = "Connecting…"
         syncState.currentSyncCategoryIDs = [categoryID]
+        syncState.currentOperation = "Connecting…"
         startLiveActivity(isFullSync: false)
 
-        let anchor = Date()
-        let epoch = Calendar.current.date(from: DateComponents(year: 2000, month: 1, day: 1))!
-
         do {
-            try await connectMySQL(config: config)
-            guard mysql != nil else { throw MySQLError.disconnected }
-
-            let (ok, schemaErr) = await SchemaService.initializeSchema(mysql: mysql!)
-            if !ok { throw MySQLError.queryError(code: 0, message: schemaErr ?? "Schema error") }
+            var mysql: MySQLService? = nil
+            if mysqlEnabled {
+                try await connectMySQL(config: config)
+                guard let m = self.mysql else { throw MySQLError.disconnected }
+                let (ok, schemaErr) = await SchemaService.initializeSchema(mysql: m)
+                if !ok { throw MySQLError.queryError(code: 0, message: schemaErr ?? "Schema error") }
+                mysql = m
+            }
 
             syncState.updateCategory(categoryID, status: .syncing)
             syncState.currentOperation = "Syncing…"
@@ -415,35 +448,31 @@ final class SyncService: ObservableObject {
                       let types = HealthDataTypes.quantityTypesByCategory.first(where: { $0.0 == cat })?.1 else {
                     throw MySQLError.queryError(code: 0, message: "Unknown category: \(categoryID)")
                 }
-                count = try await backfillQuantityCategory(
-                    catID: categoryID, cat: cat, types: types,
-                    from: epoch, until: anchor, config: config
-                )
+                var c = 0
+                for typeDesc in types {
+                    try Task.checkCancellation()
+                    c += try await syncQuantityType(typeDesc: typeDesc, mysql: mysql, since: nil)
+                }
+                count = c
             } else {
-                count = try await backfillSpecialCategory(
-                    catID: categoryID, from: epoch, until: anchor, config: config
-                ) { [self] windowStart, windowEnd, activeMySQL in
-                    switch categoryID {
-                    case "cat_category":          return try await syncCategorySamples(mysql: activeMySQL, since: windowStart, until: windowEnd, insertBatchSize: batchSize)
-                    case "cat_workouts":          return try await syncWorkouts(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_bp":                return try await syncBloodPressure(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_ecg":               return try await syncECG(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_audiogram":         return try await syncAudiograms(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_activity_summaries": return try await syncActivitySummaries(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_workout_routes":    return try await syncWorkoutRoutes(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_medications":       return try await syncMedications(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_vision":            return try await syncVisionPrescriptions(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_state_of_mind":     return try await syncStateOfMind(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    default: return 0
-                    }
+                switch categoryID {
+                case "cat_category":           count = try await syncCategorySamples(mysql: mysql, since: nil)
+                case "cat_workouts":           count = try await syncWorkouts(mysql: mysql, since: nil)
+                case "cat_bp":                 count = try await syncBloodPressure(mysql: mysql, since: nil)
+                case "cat_ecg":                count = try await syncECG(mysql: mysql, since: nil)
+                case "cat_audiogram":          count = try await syncAudiograms(mysql: mysql, since: nil)
+                case "cat_activity_summaries": count = try await syncActivitySummaries(mysql: mysql, since: nil)
+                case "cat_workout_routes":     count = try await syncWorkoutRoutes(mysql: mysql, since: nil)
+                case "cat_medications":        count = try await syncMedications(mysql: mysql, since: nil)
+                case "cat_vision":             count = try await syncVisionPrescriptions(mysql: mysql, since: nil)
+                case "cat_state_of_mind":      count = try await syncStateOfMind(mysql: mysql, since: nil)
+                default:                       count = 0
                 }
             }
 
             syncState.updateCategory(categoryID, status: .completed, recordCount: count, lastSyncDate: Date())
             syncState.lastSyncDate = Date()
             syncState.currentOperation = ""
-            // Clear cursor so a future full sync re-visits this category from the beginning
-            syncState.backfillCursors.removeValue(forKey: categoryID)
             syncState.persist()
             endLiveActivity(totalRecords: syncState.totalRecords)
             disconnectMySQL()
@@ -464,234 +493,272 @@ final class SyncService: ObservableObject {
             syncState.updateCategory(categoryID, status: .failed(error.localizedDescription))
             syncState.persist()
         }
-
-        syncState.isFullSyncRunning = false
     }
 
-    // MARK: - Historical backfill (windowed, resumable)
+    // MARK: - Phase 1: Encrypted local export (fast, screen-on)
 
-    func runHistoricalBackfill(config: MySQLConfig) async {
-        guard !syncState.isAnySyncRunning else { return }
-        syncState.isFullSyncRunning = true
-        SyncService.isSyncRunning = true
-        defer {
-            SyncService.isSyncRunning = false
-            syncState.currentSyncCategoryIDs = []
-        }
+    /// Phase 1 worker: streams every HealthKit table covered by full sync to
+    /// encrypted local dump files, driving the existing per-category progress UI
+    /// (status, per-type progress bar, live activity). The screen must stay on
+    /// because HealthKit is read here — but only here; delivery needs no screen.
+    /// Reuses the `sync*` methods with `mysql: nil`, so the dump captures exactly
+    /// the `HB*Row` values the live EA path produces — no second mapping to drift.
+    /// Does NOT manage the running flags (`runFullSync` owns them). Returns the
+    /// run id, or nil on failure/cancel.
+    private func exportDump() async -> String? {
         syncState.errorMessage = nil
-        syncState.currentOperation = "Connecting…"
+        syncState.currentOperation = "Preparing export…"
+        syncState.currentSyncCategoryIDs = Set(syncState.categories.map(\.id))
+        // From-scratch full sync wipes the remote and re-uploads everything —
+        // clear stale "Synced" badges + the old total so the screen isn't confusing.
+        syncState.resetForFullSync()
         startLiveActivity(isFullSync: true)
 
-        if !isBackgroundSync {
+        // HealthKit is only readable while unlocked — keep the screen awake for
+        // the export, and only the export. Deliver phases never touch HealthKit.
+        // Honors the user's "Keep screen on during sync" setting; SyncService is
+        // the single authority for the idle timer (the dashboard must not fight it).
+        if !isBackgroundSync && UserDefaults.standard.bool(forKey: "keepScreenOnDuringSync") {
             UIApplication.shared.isIdleTimerDisabled = true
         }
-        defer {
-            if !isBackgroundSync {
-                UIApplication.shared.isIdleTimerDisabled = false
-            }
-        }
+        defer { if !isBackgroundSync { UIApplication.shared.isIdleTimerDisabled = false } }
 
-        var bgTaskID: UIBackgroundTaskIdentifier = .invalid
-        if !isBackgroundSync {
-            bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "health-full-sync") {
-                self.taskForCancellation?.cancel()
-                self.syncState.persist()
-                UserDefaults.standard.set(true, forKey: "pendingFullSyncResume")
-                let req = BGProcessingTaskRequest(identifier: "ee.klemens.healthbeat.sync")
-                req.requiresNetworkConnectivity = true
-                req.requiresExternalPower = false
-                req.earliestBeginDate = nil
-                try? BGTaskScheduler.shared.submit(req)
-                UIApplication.shared.endBackgroundTask(bgTaskID)
-                bgTaskID = .invalid
-            }
-        }
-        defer {
-            if bgTaskID != .invalid {
-                UIApplication.shared.endBackgroundTask(bgTaskID)
-            }
-        }
+        let runID = "run-" + UUID().uuidString.lowercased()
+        let since = Calendar.current.date(from: DateComponents(year: 2000, month: 1, day: 1))!
+        let until = Date()
+        var grandTotal = 0
 
-        let epoch = Calendar.current.date(from: DateComponents(year: 2000, month: 1, day: 1))!
-        let historicalStart: Date
-
-        if let previousAnchor = syncState.backfillAnchorDate, syncState.hasCompletedFullSync {
-            // A full backfill previously completed. Re-run with a 7-day lookback so samples
-            // that arrived in HealthKit after the previous anchor (with past startDates) are
-            // captured. INSERT IGNORE makes this safe.
-            // Clear cursors and advance anchor to now; hasCompletedFullSync is cleared so that
-            // an interruption resumes rather than triggering another lookback.
-            historicalStart = previousAnchor.addingTimeInterval(-7 * 24 * 3600)
-            syncState.backfillAnchorDate = Date()
-            syncState.backfillCursors.removeAll()
-            syncState.hasCompletedFullSync = false
-            syncState.persist()
-        } else if syncState.backfillAnchorDate != nil {
-            // Anchor exists but sync hasn't completed — resuming an interrupted backfill.
-            historicalStart = epoch
-        } else {
-            // First-time full sync: backfill all data from year 2000.
-            syncState.backfillAnchorDate = Date()
-            syncState.persist()
-            historicalStart = epoch
-        }
-        let anchor = syncState.backfillAnchorDate!
-
-        // Compute which categories still need processing (cursor != anchor means not yet done)
-        var pendingIDs = Set<String>()
-        for (cat, _) in HealthDataTypes.quantityTypesByCategory {
-            let catID = "qty_\(cat.rawValue)"
-            if syncState.backfillCursors[catID] != anchor { pendingIDs.insert(catID) }
-        }
-        for (catID, _) in [("cat_category", ""), ("cat_workouts", ""), ("cat_bp", ""),
-                            ("cat_ecg", ""), ("cat_audiogram", ""), ("cat_activity_summaries", ""),
-                            ("cat_workout_routes", ""), ("cat_medications", ""),
-                            ("cat_vision", ""), ("cat_state_of_mind", "")] {
-            if syncState.backfillCursors[catID] != anchor { pendingIDs.insert(catID) }
-        }
-        syncState.currentSyncCategoryIDs = pendingIDs
-
-        var syncLogID: Int64 = 0
         do {
-            try await connectMySQL(config: config)
-            guard let initialMySQL = mysql else { throw MySQLError.disconnected }
+            // Per-run key, kept in the Keychain so a resumed drain can still decrypt.
+            let key = SymmetricKey(size: .bits256)
+            try DumpKeychain.store(key, runID: runID)
+            let runDir = try DumpStore.createRunDir(runID)
+            let dump = DumpFileBackendWriter(runDir: runDir, key: key)
 
-            let (ok, schemaErr) = await SchemaService.initializeSchema(mysql: initialMySQL)
-            if !ok { throw MySQLError.queryError(code: 0, message: schemaErr ?? "Schema error") }
+            // Point the writer at the dump sink for the export's duration. The
+            // sync* methods build the same rows they send to EA live.
+            let previousWriter = eaWriter
+            eaWriter = dump
+            defer { eaWriter = previousWriter }
 
-            await cleanupStaleLogEntries(mysql: initialMySQL)
-            syncLogID = try await startSyncLog(mysql: initialMySQL, category: "full_sync")
+            let totalCats = Double(max(1, syncState.categories.count))
+            var doneCats = 0.0
 
-            // Quantity categories — 365-day windowed backfill
+            // Export one atomic ("special") category, updating its card.
+            func exportSpecial(_ catID: String, _ label: String, _ run: () async throws -> Int) async throws {
+                try Task.checkCancellation()
+                syncState.updateCategory(catID, status: .syncing, progress: 0, total: 1)
+                syncState.currentOperation = "Exporting \(label)…"
+                let count = try await run()
+                grandTotal += count
+                doneCats += 1
+                // "Exported" — NOT "Synced": the data is in the local dump but
+                // not yet delivered to MySQL/EA. Marked complete after delivery.
+                syncState.updateCategory(catID, status: .exported, recordCount: count, lastSyncDate: until, progress: 1)
+                syncState.totalRecords = grandTotal
+                syncState.updateFullSyncProgress(export: doneCats / totalCats)
+                updateLiveActivity(phase: "Export", operation: "Exported \(label) (\(count.formatted()))", records: grandTotal)
+            }
+
+            // Quantity categories — per-category card + per-type progress bar.
             for (cat, types) in HealthDataTypes.quantityTypesByCategory {
+                try Task.checkCancellation()
                 let catID = "qty_\(cat.rawValue)"
-                try Task.checkCancellation()
-                if syncState.backfillCursors[catID] == anchor { continue }
-
-                syncState.updateCategory(catID, status: .syncing)
-                syncState.currentOperation = "Backfilling \(cat.rawValue)…"
-                let count = try await backfillQuantityCategory(
-                    catID: catID, cat: cat, types: types,
-                    from: historicalStart, until: anchor, config: config
-                )
-                syncState.updateCategory(catID, status: .completed, recordCount: count, lastSyncDate: Date())
-                updateLiveActivity(phase: cat.rawValue, operation: "Backfilled \(cat.rawValue) (\(count.formatted()) records)", records: count)
-            }
-
-            // Special categories — 365-day windowed backfill
-            let specials: [(String, String)] = [
-                ("cat_category", "Health Events"),
-                ("cat_workouts", "Workouts"),
-                ("cat_bp", "Blood Pressure"),
-                ("cat_ecg", "ECG"),
-                ("cat_audiogram", "Audiograms"),
-                ("cat_activity_summaries", "Activity Rings"),
-                ("cat_workout_routes", "Workout Routes"),
-                ("cat_medications", "Medications"),
-                ("cat_vision", "Vision Prescriptions"),
-                ("cat_state_of_mind", "State of Mind"),
-            ]
-            for (catID, displayName) in specials {
-                try Task.checkCancellation()
-                if syncState.backfillCursors[catID] == anchor { continue }
-
-                syncState.updateCategory(catID, status: .syncing)
-                syncState.currentOperation = "Backfilling \(displayName)…"
-                let count = try await backfillSpecialCategory(
-                    catID: catID, from: historicalStart, until: anchor, config: config
-                ) { [self] windowStart, windowEnd, activeMySQL in
-                    switch catID {
-                    case "cat_category":
-                        return try await syncCategorySamples(mysql: activeMySQL, since: windowStart, until: windowEnd, insertBatchSize: batchSize)
-                    case "cat_workouts":
-                        return try await syncWorkouts(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_bp":
-                        return try await syncBloodPressure(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_ecg":
-                        return try await syncECG(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_audiogram":
-                        return try await syncAudiograms(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_activity_summaries":
-                        return try await syncActivitySummaries(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_workout_routes":
-                        return try await syncWorkoutRoutes(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_medications":
-                        return try await syncMedications(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_vision":
-                        return try await syncVisionPrescriptions(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    case "cat_state_of_mind":
-                        return try await syncStateOfMind(mysql: activeMySQL, since: windowStart, until: windowEnd)
-                    default:
-                        return 0
-                    }
+                syncState.updateCategory(catID, status: .syncing, progress: 0, total: types.count)
+                syncState.currentOperation = "Exporting \(cat.rawValue)…"
+                var catCount = 0
+                for (i, typeDesc) in types.enumerated() {
+                    try Task.checkCancellation()
+                    SyncService.noteSyncActivity()
+                    catCount += try await syncQuantityType(typeDesc: typeDesc, mysql: nil, since: since, until: until)
+                    syncState.updateCategory(catID, progress: i + 1)
+                    syncState.updateFullSyncProgress(export: (doneCats + Double(i + 1) / Double(types.count)) / totalCats)
                 }
-                syncState.updateCategory(catID, status: .completed, recordCount: count, lastSyncDate: Date())
-                updateLiveActivity(phase: displayName, operation: "Backfilled \(displayName) (\(count.formatted()) records)", records: count)
+                grandTotal += catCount
+                doneCats += 1
+                syncState.updateCategory(catID, status: .exported, recordCount: catCount, lastSyncDate: until, progress: types.count)
+                syncState.totalRecords = grandTotal
+                updateLiveActivity(phase: "Export", operation: "Exported \(cat.rawValue) (\(catCount.formatted()))", records: grandTotal)
             }
 
-            // Two-way place category + geofence definition sync
-            do {
-                try await ensureMySQLConnected(config: config)
-                if let geoMySQL = self.mysql {
-                    do { try await GeofenceSyncService.syncPlaceCategories(mysql: geoMySQL) }
-                    catch { print("[SyncService] Place category sync failed: \(error)") }
+            try await exportSpecial("cat_category", "Health Events") { try await self.syncCategorySamples(mysql: nil, since: since, until: until) }
+            try await exportSpecial("cat_workouts", "Workouts") { try await self.syncWorkouts(mysql: nil, since: since, until: until) }
+            try await exportSpecial("cat_bp", "Blood Pressure") { try await self.syncBloodPressure(mysql: nil, since: since, until: until) }
+            try await exportSpecial("cat_ecg", "ECG") { try await self.syncECG(mysql: nil, since: since, until: until) }
+            try await exportSpecial("cat_audiogram", "Audiogram") { try await self.syncAudiograms(mysql: nil, since: since, until: until) }
+            try await exportSpecial("cat_activity_summaries", "Activity Rings") { try await self.syncActivitySummaries(mysql: nil, since: since, until: until) }
+            try await exportSpecial("cat_workout_routes", "Workout Routes") { try await self.syncWorkoutRoutes(mysql: nil, since: since, until: until) }
+            try await exportSpecial("cat_medications", "Medications") { try await self.syncMedications(mysql: nil, since: since, until: until) }
+            try await exportSpecial("cat_vision", "Vision Prescriptions") { try await self.syncVisionPrescriptions(mysql: nil, since: since, until: until) }
+            try await exportSpecial("cat_state_of_mind", "State of Mind") { try await self.syncStateOfMind(mysql: nil, since: since, until: until) }
 
-                    let geofencesChanged = try await GeofenceSyncService.syncGeofences(mysql: geoMySQL)
-                    if geofencesChanged {
-                        LocationService.shared.updateGeofences(GeoFence.loadAll())
-                        NotificationCenter.default.post(name: .geofencesDidSync, object: nil)
-                    }
+            // Close files, gather counts, write the manifest.
+            let counts = try await dump.finish()
+            let manifest = DumpManifest(
+                runID: runID,
+                schemaVersion: SchemaService.currentSchemaVersion,
+                createdAt: ISO8601DateFormatter().string(from: until),
+                since: sqlDate(since),
+                until: sqlDate(until),
+                tables: counts.map {
+                    DumpManifest.TableEntry(table: $0.key, rowCount: $0.value, fileName: $0.key.fileName)
                 }
-            } catch {
-                print("[SyncService] Geofence sync failed: \(error)")
-            }
+            )
+            try JSONEncoder().encode(manifest)
+                .write(to: DumpStore.manifestURL(runID),
+                       options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
 
-            // Mark complete. Keep backfillCursors (all at anchor) and backfillAnchorDate so
-            // the next Full Sync press detects "allComplete" and re-syncs only the 7-day
-            // lookback window rather than re-scanning from epoch.
-            syncState.hasCompletedFullSync = true
-            syncState.lastSyncDate = Date()
-            syncState.currentOperation = "Backfill complete"
+            UserDefaults.standard.set(runID, forKey: "pendingDumpDrainRunID")
+            UserDefaults.standard.set(runID, forKey: "pendingEAUploadRunID")
 
-            if let currentMySQL = mysql {
-                try await completeSyncLog(mysql: currentMySQL, id: syncLogID, count: syncState.totalRecords)
-            }
+            // Export finished — delivery continues with no screen needed. Leave the
+            // live activity running; runFullSync / the EA uploader end it when the
+            // whole sync completes.
+            syncState.updateFullSyncProgress(phase: .delivering, export: 1.0)
+            syncState.currentOperation = "Export complete (\(grandTotal.formatted()) records) — delivering…"
+            lastExportRecordCount = grandTotal
             syncState.persist()
-            endLiveActivity(totalRecords: syncState.totalRecords)
-            disconnectMySQL()
-
+            return runID
         } catch is CancellationError {
-            if let m = mysql, syncLogID != 0 { await failSyncLog(mysql: m, id: syncLogID, message: "Sync cancelled") }
-            disconnectMySQL()
-            endLiveActivity(totalRecords: syncState.totalRecords)
             syncState.currentOperation = "Sync cancelled"
-            for i in syncState.categories.indices {
-                if case .syncing = syncState.categories[i].status {
-                    syncState.categories[i].status = .idle
-                }
+            for i in syncState.categories.indices where syncState.categories[i].status.isActive {
+                syncState.categories[i].status = .idle
             }
-            syncState.persist()
+            endLiveActivity(totalRecords: grandTotal)
+            DumpStore.wipeRun(runID)
+            return nil
         } catch {
-            if let m = mysql, syncLogID != 0 { await failSyncLog(mysql: m, id: syncLogID, message: error.localizedDescription) }
-            disconnectMySQL()
-            endLiveActivity(totalRecords: syncState.totalRecords)
             syncState.errorMessage = error.localizedDescription
             syncState.currentOperation = ""
-            for i in syncState.categories.indices {
-                if case .syncing = syncState.categories[i].status {
-                    syncState.categories[i].status = .failed(error.localizedDescription)
-                }
+            for i in syncState.categories.indices where syncState.categories[i].status.isActive {
+                syncState.categories[i].status = .idle
             }
-            syncState.persist()
+            endLiveActivity(totalRecords: grandTotal)
+            DumpStore.wipeRun(runID)
+            return nil
         }
-
-        syncState.isFullSyncRunning = false
     }
 
-    // MARK: - Backfill helpers
+    // MARK: - Full sync (dump-based, replaces the old windowed backfill)
+
+    /// The one full sync. Phase 1 exports all HealthKit data to encrypted local
+    /// dumps (screen-on, minutes). Phase 2 delivers to the enabled destinations
+    /// WITHOUT needing the screen on:
+    ///
+    /// - **EA first** — it's fast for the phone (hand the big file to a
+    ///   background `URLSession` upload; EA wipes its tables and imports
+    ///   server-side), so the phone can then spend its time on the slower drain.
+    /// - **MySQL second** — drained on-device; the drain truncates the health
+    ///   tables first for a clean replace and resumes across background windows.
+    ///
+    /// Honors the per-destination enable toggles. Local dumps are wiped once
+    /// every required destination confirms (`DumpStore.markDrainDone` /
+    /// `markEAKeyDelivered`).
+    func runFullSync(config: MySQLConfig) async {
+        guard !syncState.isAnySyncRunning else { return }
+        let mysqlConfigured = config.enabled
+        let eaConfigured = EAConfig.load().isConfigured
+        guard mysqlConfigured || eaConfigured else {
+            syncState.errorMessage = "No sync destination is enabled. Turn on MySQL or EA in Settings."
+            return
+        }
+
+        // Deliver only to destinations that still need a baseline (catch-up). A
+        // destination that is already baselined + current is left untouched — no
+        // re-truncate; incremental keeps it current. The export still reads ALL
+        // HealthKit data (the lagging destination needs everything).
+        let mysqlNeedsBaseline = syncState.mysqlNeedsFullSync(enabled: mysqlConfigured)
+        let eaNeedsBaseline = syncState.eaNeedsFullSync(configured: eaConfigured)
+        guard mysqlNeedsBaseline || eaNeedsBaseline else {
+            // Both enabled destinations already have a baseline — nothing to full
+            // sync. (The dashboard shows "Sync Now" → incremental in this state.)
+            return
+        }
+
+        // Own the running-flag lifecycle across the whole pass (export + deliver).
+        syncState.isFullSyncRunning = true
+        SyncService.setGlobalSyncRunning(true)
+        syncState.startFullSyncProgress(eaEnabled: eaNeedsBaseline, mysqlEnabled: mysqlNeedsBaseline)
+        defer {
+            SyncService.setGlobalSyncRunning(false)
+            syncState.isFullSyncRunning = false
+            syncState.currentSyncCategoryIDs = []
+        }
+
+        guard let runID = await exportDump() else {   // screen-on phase
+            syncState.endFullSyncProgress()
+            return
+        }
+        DumpStore.setEARequired(eaNeedsBaseline, runID: runID)
+        DumpStore.setMySQLRequired(mysqlNeedsBaseline, runID: runID)
+
+        // Phase 2a — EA first (fast: background upload + server-side import).
+        if eaNeedsBaseline {
+            syncState.currentOperation = "Uploading to EA…"
+            // Stash the live-activity progress weighting so the background uploader
+            // can advance the live activity (overall = base + EA-weight × fraction)
+            // without access to SyncState while suspended.
+            UserDefaults.standard.set(syncState.overallProgress, forKey: "eaUpload.liveBase.\(runID)")
+            UserDefaults.standard.set(syncState.fullSyncEAWeight, forKey: "eaUpload.liveSpan.\(runID)")
+            do { try EADumpUploader.shared.start(runID: runID) }
+            catch { syncState.errorMessage = error.localizedDescription }
+        }
+
+        // Phase 2b — MySQL drain on-device (slower). Resumable if interrupted.
+        if mysqlNeedsBaseline {
+            let drained = await drainDump(runID: runID, config: config)
+            if drained {
+                UserDefaults.standard.removeObject(forKey: "pendingDumpDrainRunID")
+                syncState.updateFullSyncProgress(mysql: 1.0)
+                syncState.markMySQLBaselineDone()   // MySQL now has a complete baseline
+                _ = DumpStore.markDrainDone(runID)   // file-wipe coordination
+            }
+        } else {
+            UserDefaults.standard.removeObject(forKey: "pendingDumpDrainRunID")
+        }
+
+        syncState.persist()
+        // Finalize only when EVERY enabled destination is done. If EA is still
+        // uploading (background) or failed, the EA uploader / its notification
+        // finalize (or surface the retry) when it finishes.
+        finalizeFullSyncIfComplete()
+        if syncState.fullSyncPhase != .complete {
+            syncState.currentOperation = syncState.fsEAFailed
+                ? "MySQL done — EA upload failed, tap Retry"
+                : "MySQL done — EA uploading in the background"
+        }
+    }
+
+    /// Finishes the full-sync UI once every delivered destination is done: green
+    /// category cards, 100% bar, live activity end. Per-destination baselines are
+    /// marked at each destination's own completion point (MySQL drain success /
+    /// EA key delivery), so this only handles the shared UI finish. Idempotent.
+    /// Called after the MySQL drain and from the EA upload completion.
+    func finalizeFullSyncIfComplete() {
+        guard syncState.fullSyncPhase != .idle, syncState.fullSyncPhase != .complete else { return }
+        guard syncState.fullSyncEADone, syncState.fullSyncMySQLDone else { return }
+        markAllCategoriesSynced()
+        syncState.finishFullSyncProgress()
+        syncState.lastSyncDate = Date()
+        syncState.currentOperation = "Full sync complete"
+        syncState.persist()
+        endLiveActivity(totalRecords: lastExportRecordCount)
+    }
+
+    /// Marks every category card as Synced (green). Called when a full sync is
+    /// fully delivered, and by `SyncViewModel` when the EA upload tail finishes.
+    func markAllCategoriesSynced() {
+        for i in syncState.categories.indices where syncState.categories[i].status == .exported {
+            syncState.categories[i].status = .completed
+        }
+        syncState.persist()
+    }
+
+    // MARK: - Connection helpers
 
     /// Ensures MySQL is connected, reconnecting if the connection was dropped.
     private func ensureMySQLConnected(config: MySQLConfig) async throws {
+        SyncService.noteSyncActivity()  // heartbeat: called per drain step / per live-sync type
         guard mysql != nil else {
             try await connectMySQL(config: config)
             return
@@ -720,129 +787,18 @@ final class SyncService: ObservableObject {
         return false
     }
 
-    /// Backfills a quantity category in 365-day windows from `historicalStart` to `anchor`,
-    /// resuming from `syncState.backfillCursors[catID]` if set.
-    private func backfillQuantityCategory(
-        catID: String,
-        cat: HealthCategory,
-        types: [QuantityTypeDescriptor],
-        from historicalStart: Date,
-        until anchor: Date,
-        config: MySQLConfig
-    ) async throws -> Int {
-        let windowSize: TimeInterval = 365 * 24 * 60 * 60
-        var cursor = syncState.backfillCursors[catID] ?? historicalStart
-        var total = 0
-        let totalWindows = Int(ceil(anchor.timeIntervalSince(historicalStart) / windowSize))
-        var windowIdx = cursor > historicalStart
-            ? Int(ceil(cursor.timeIntervalSince(historicalStart) / windowSize))
-            : 0
-
-        while cursor < anchor {
-            try Task.checkCancellation()
-            let windowEnd = min(cursor.addingTimeInterval(windowSize), anchor)
-            var windowTotal = 0
-            var retries = 0
-            while true {
-                do {
-                    try await ensureMySQLConnected(config: config)
-                    guard let activeMySQL = mysql else { throw MySQLError.disconnected }
-                    windowTotal = 0
-                    for typeDesc in types {
-                        windowTotal += try await syncQuantityType(
-                            typeDesc: typeDesc, mysql: activeMySQL,
-                            since: cursor, until: windowEnd,
-                            insertBatchSize: batchSize
-                        )
-                    }
-                    break
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch where SyncService.isConnectionError(error) && retries < 3 {
-                    // Connection dropped (TCP RST, timeout, etc.) — reconnect and retry window
-                    retries += 1
-                    disconnectMySQL()
-                    try await Task.sleep(nanoseconds: UInt64(retries) * 1_000_000_000)
-                } catch MySQLError.queryError(let code, _) where code == 1213 && retries < 3 {
-                    // Deadlock: connection is still valid, just retry after backoff
-                    retries += 1
-                    try await Task.sleep(nanoseconds: UInt64(retries) * 500_000_000)
-                }
-            }
-            total += windowTotal
-
-            cursor = windowEnd
-            windowIdx += 1
-            syncState.backfillCursors[catID] = cursor
-            syncState.persist()
-            syncState.updateCategory(catID, status: .syncing, progress: windowIdx, total: totalWindows)
-            let op = "Backfilling \(cat.rawValue): window \(windowIdx)/\(totalWindows)…"
-            syncState.currentOperation = op
-            updateLiveActivity(phase: cat.rawValue, operation: op, records: total)
-        }
-        return total
-    }
-
-    /// Backfills a special (non-quantity) category in 365-day windows, resuming from cursor.
-    private func backfillSpecialCategory(
-        catID: String,
-        from historicalStart: Date,
-        until anchor: Date,
-        config: MySQLConfig,
-        syncWindow: (Date, Date, MySQLService) async throws -> Int
-    ) async throws -> Int {
-        let windowSize: TimeInterval = 365 * 24 * 60 * 60
-        var cursor = syncState.backfillCursors[catID] ?? historicalStart
-        var total = 0
-        let totalWindows = Int(ceil(anchor.timeIntervalSince(historicalStart) / windowSize))
-        var windowIdx = cursor > historicalStart
-            ? Int(ceil(cursor.timeIntervalSince(historicalStart) / windowSize))
-            : 0
-
-        while cursor < anchor {
-            try Task.checkCancellation()
-            let windowEnd = min(cursor.addingTimeInterval(windowSize), anchor)
-            var retries = 0
-            var windowTotal = 0
-            while true {
-                do {
-                    try await ensureMySQLConnected(config: config)
-                    guard let activeMySQL = mysql else { throw MySQLError.disconnected }
-                    windowTotal = try await syncWindow(cursor, windowEnd, activeMySQL)
-                    break
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch where SyncService.isConnectionError(error) && retries < 3 {
-                    // Connection dropped (TCP RST, timeout, etc.) — reconnect and retry window
-                    retries += 1
-                    disconnectMySQL()
-                    try await Task.sleep(nanoseconds: UInt64(retries) * 1_000_000_000)
-                } catch MySQLError.queryError(let code, _) where code == 1213 && retries < 3 {
-                    // Deadlock: connection is still valid, just retry after backoff
-                    retries += 1
-                    try await Task.sleep(nanoseconds: UInt64(retries) * 500_000_000)
-                }
-            }
-            total += windowTotal
-
-            cursor = windowEnd
-            windowIdx += 1
-            syncState.backfillCursors[catID] = cursor
-            syncState.persist()
-            syncState.updateCategory(catID, status: .syncing, progress: windowIdx, total: totalWindows)
-            let displayName = syncState.categories.first(where: { $0.id == catID })?.displayName ?? catID
-            let op = "Backfilling \(displayName): window \(windowIdx)/\(totalWindows)…"
-            syncState.currentOperation = op
-            updateLiveActivity(phase: displayName, operation: op, records: total)
-        }
-        return total
-    }
-
     // MARK: - Incremental sync
 
     func runIncrementalSync(config: MySQLConfig) async {
         guard !syncState.isAnySyncRunning else { return }
+        // Run only if at least one enabled destination has a full-sync baseline;
+        // incremental writes to those, and skips any enabled-but-un-baselined
+        // destination (which the dashboard flags as "needs full sync"). No
+        // baseline anywhere → a full sync (screen-on export) is required first.
+        guard syncState.anyBaselineReady(mysqlEnabled: config.enabled,
+                                         eaConfigured: EAConfig.load().isConfigured) else { return }
         syncState.isIncrementalSyncRunning = true
+        syncState.fullSyncPhase = .idle   // incremental: recalcOverall drives progress
         SyncService.isSyncRunning = true
         defer {
             SyncService.isSyncRunning = false
@@ -851,8 +807,9 @@ final class SyncService: ObservableObject {
         syncState.errorMessage = nil
         startLiveActivity(isFullSync: false)
 
-        // Keep screen awake during foreground sync to prevent auto-lock killing HealthKit access
-        if !isBackgroundSync {
+        // Keep screen awake during foreground sync to prevent auto-lock killing
+        // HealthKit access — honoring the user's "Keep screen on during sync" setting.
+        if !isBackgroundSync && UserDefaults.standard.bool(forKey: "keepScreenOnDuringSync") {
             UIApplication.shared.isIdleTimerDisabled = true
         }
         defer {
@@ -893,29 +850,47 @@ final class SyncService: ObservableObject {
                 }
             }
 
-            try await connectMySQL(config: config)
-            guard let mysql = mysql else { throw MySQLError.disconnected }
+            // Write to MySQL only when it's enabled AND has a baseline. An
+            // enabled-but-un-baselined MySQL is skipped (it needs a full sync);
+            // the pass then runs EA-only — the leaf `sync*` methods accept a nil
+            // mysql. (`eaWriter` is likewise attached only for a baselined EA.)
+            let mysqlEnabled = config.enabled && syncState.mysqlBaselineDone
+            guard mysqlEnabled || eaWriter != nil else {
+                syncState.currentOperation = "No sync destination is enabled"
+                syncState.isIncrementalSyncRunning = false
+                return
+            }
+            if mysqlEnabled {
+                try await connectMySQL(config: config)
+                guard self.mysql != nil else { throw MySQLError.disconnected }
+            }
 
-            // Helper: get a live MySQL connection, reconnecting if the previous one was
-            // dropped (e.g. screen locked, network changed). Returns the fresh instance.
-            @MainActor func liveMySQL() async throws -> MySQLService {
+            // Helper: a live MySQL connection (reconnecting if dropped), or nil
+            // when MySQL is disabled.
+            @MainActor func liveMySQL() async throws -> MySQLService? {
+                guard mysqlEnabled else { return nil }
                 try await ensureMySQLConnected(config: config)
                 guard let m = self.mysql else { throw MySQLError.disconnected }
                 return m
             }
 
             // Ensure schema is up to date (adds any new tables from updates)
-            let (ok, schemaErr) = await SchemaService.initializeSchema(mysql: mysql)
-            if !ok { throw MySQLError.queryError(code: 0, message: schemaErr ?? "Schema error") }
+            if let m = self.mysql {
+                let (ok, schemaErr) = await SchemaService.initializeSchema(mysql: m)
+                if !ok { throw MySQLError.queryError(code: 0, message: schemaErr ?? "Schema error") }
 
-            if Date().timeIntervalSince(SyncService.lastStaleCleanup) > 600 {
-                await cleanupStaleLogEntries(mysql: mysql)
-                SyncService.lastStaleCleanup = Date()
+                if Date().timeIntervalSince(SyncService.lastStaleCleanup) > 600 {
+                    await cleanupStaleLogEntries(mysql: m)
+                    SyncService.lastStaleCleanup = Date()
+                }
             }
 
-            // Find last sync date. If no completed sync exists (e.g. a full sync was interrupted),
-            // fall back to a distant past date so we recover all historical data rather than just 24h.
-            let lastSync = try await lastCompletedSyncDate(mysql: mysql)
+            // Last completed sync: from the MySQL sync log when available, else
+            // from the locally-persisted lastSyncDate (EA-only mode).
+            let lastSync: Date? = try await {
+                if let m = self.mysql { return try await lastCompletedSyncDate(mysql: m) ?? syncState.lastSyncDate }
+                return syncState.lastSyncDate
+            }()
             let distantPast = Calendar.current.date(from: DateComponents(year: 2000, month: 1, day: 1))!
             let since = lastSync ?? distantPast
             // Apply a 7-day lookback for HealthKit queries so late-arriving samples (e.g. apps
@@ -939,7 +914,9 @@ final class SyncService: ObservableObject {
                 : "Full historical sync (fetching all data since 2000)…"
             syncState.currentOperation = opLabel
 
-            logID = try await startSyncLog(mysql: mysql, category: "incremental_sync")
+            if let m = self.mysql {
+                logID = try await startSyncLog(mysql: m, category: "incremental_sync")
+            }
             var failedCategories: [String] = []
             var hkInaccessibleCount = 0
 
@@ -972,8 +949,16 @@ final class SyncService: ObservableObject {
             print("[SyncService] Incremental sync order: \(allUnits.map { "\($0.categoryID)(\(catStates.first(where: { $0.id == $0.id })?.lastSyncDate?.description ?? "nil"))" }.joined(separator: ", "))")
 
             syncState.currentSyncCategoryIDs = Set(allUnits.map(\.categoryID))
+            // Drive the overall bar from units processed this pass (0→100%) — NOT
+            // from counting green category cards (which start the pass already
+            // completed, making the bar begin near 100%). Category cards keep their
+            // real status; the one in flight flips to "Syncing…", the rest stay as
+            // they were until re-synced.
+            let totalUnits = max(1, allUnits.count)
+            syncState.beginIncrementalProgress()
 
-            for unit in allUnits {
+            for (idx, unit) in allUnits.enumerated() {
+                syncState.setIncrementalProgress(Double(idx) / Double(totalUnits))
                 let catID = unit.categoryID
                 try Task.checkCancellation()
 
@@ -1126,37 +1111,40 @@ final class SyncService: ObservableObject {
                 syncState.errorMessage = "Sync completed with errors in: \(failedCategories.joined(separator: ", "))"
             }
 
-            // Two-way place category + geofence definition sync
-            do {
-                let geoMySQL = try await liveMySQL()
-                do { try await GeofenceSyncService.syncPlaceCategories(mysql: geoMySQL) }
-                catch { print("[SyncService] Place category sync failed: \(error)") }
+            // Two-way place category + geofence definition sync — MySQL-backed,
+            // so only when MySQL is enabled.
+            if let geoMySQL = try await liveMySQL() {
+                do {
+                    do { try await GeofenceSyncService.syncPlaceCategories(mysql: geoMySQL) }
+                    catch { print("[SyncService] Place category sync failed: \(error)") }
 
-                let geofencesChanged = try await GeofenceSyncService.syncGeofences(mysql: geoMySQL)
-                if geofencesChanged {
-                    LocationService.shared.updateGeofences(GeoFence.loadAll())
-                    NotificationCenter.default.post(name: .geofencesDidSync, object: nil)
+                    let geofencesChanged = try await GeofenceSyncService.syncGeofences(mysql: geoMySQL)
+                    if geofencesChanged {
+                        LocationService.shared.updateGeofences(GeoFence.loadAll())
+                        NotificationCenter.default.post(name: .geofencesDidSync, object: nil)
+                    }
+                } catch {
+                    print("[SyncService] Geofence sync failed: \(error)")
                 }
-            } catch {
-                print("[SyncService] Geofence sync failed: \(error)")
             }
 
-            let finalMySQL = try await liveMySQL()
-
-            // If HealthKit was inaccessible (device locked) and no records were synced,
-            // mark the sync as "skipped" so it doesn't pollute lastCompletedSyncDate.
-            // This ensures the next sync (when device is unlocked) will still find new data.
-            if total == 0, hkInaccessibleCount > 0 {
-                print("[SyncService] Incremental sync: HealthKit inaccessible for \(hkInaccessibleCount) types — deleting log entry")
-                await deleteSyncLog(mysql: finalMySQL, id: logID)
-            } else {
-                print("[SyncService] Incremental sync completed: \(total) records, \(failedCategories.count) failed categories, \(hkInaccessibleCount) HK-inaccessible")
-                try await completeSyncLog(mysql: finalMySQL, id: logID, count: total)
+            // Sync-log bookkeeping only when MySQL is the destination.
+            if let finalMySQL = try await liveMySQL(), logID != 0 {
+                // If HealthKit was inaccessible (device locked) and no records were synced,
+                // mark the sync as "skipped" so it doesn't pollute lastCompletedSyncDate.
+                if total == 0, hkInaccessibleCount > 0 {
+                    print("[SyncService] Incremental sync: HealthKit inaccessible for \(hkInaccessibleCount) types — deleting log entry")
+                    await deleteSyncLog(mysql: finalMySQL, id: logID)
+                } else {
+                    print("[SyncService] Incremental sync completed: \(total) records, \(failedCategories.count) failed categories, \(hkInaccessibleCount) HK-inaccessible")
+                    try await completeSyncLog(mysql: finalMySQL, id: logID, count: total)
+                }
             }
             if forceDeepSweep {
                 SyncService.lastDeepSweepDate = Date()
             }
             syncState.lastSyncDate = Date()
+            syncState.setIncrementalProgress(1.0)
             syncState.currentOperation = "Incremental sync done (\(total) records)"
             syncState.persist()
             endLiveActivity(totalRecords: total)
@@ -1184,6 +1172,7 @@ final class SyncService: ObservableObject {
             syncState.persist()
         }
 
+        syncState.endIncrementalProgress()
         syncState.isIncrementalSyncRunning = false
     }
 
@@ -1191,7 +1180,7 @@ final class SyncService: ObservableObject {
     private func syncSpecialCategory(
         id: String,
         querySince: Date,
-        liveMySQL: @MainActor () async throws -> MySQLService
+        liveMySQL: @MainActor () async throws -> MySQLService?
     ) async throws -> Int {
         var m = try await liveMySQL()
         let count: Int
@@ -1262,7 +1251,12 @@ final class SyncService: ObservableObject {
     /// when an HKObserverQuery fires, so we complete within the ~30s background time limit.
     func runTargetedSync(categoryIDs: Set<String>, config: MySQLConfig) async {
         guard !syncState.isAnySyncRunning else { return }
+        // Need at least one baselined destination to write to (same rule as
+        // runIncrementalSync); un-baselined destinations wait for a full sync.
+        guard syncState.anyBaselineReady(mysqlEnabled: config.enabled,
+                                         eaConfigured: EAConfig.load().isConfigured) else { return }
         syncState.isIncrementalSyncRunning = true
+        syncState.fullSyncPhase = .idle
         SyncService.isSyncRunning = true
         defer {
             SyncService.isSyncRunning = false
@@ -1279,13 +1273,28 @@ final class SyncService: ObservableObject {
                 }
             }
 
-            try await connectMySQL(config: config)
-            guard let mysql = mysql else { throw MySQLError.disconnected }
+            // Write to MySQL only when enabled AND baselined; otherwise EA-only
+            // (leaf methods take nil). `eaWriter` is attached only for a
+            // baselined EA.
+            let mysqlEnabled = config.enabled && syncState.mysqlBaselineDone
+            guard mysqlEnabled || eaWriter != nil else {
+                syncState.isIncrementalSyncRunning = false
+                return
+            }
+            if mysqlEnabled {
+                try await connectMySQL(config: config)
+                guard self.mysql != nil else { throw MySQLError.disconnected }
+            }
 
-            let (ok, schemaErr) = await SchemaService.initializeSchema(mysql: mysql)
-            if !ok { throw MySQLError.queryError(code: 0, message: schemaErr ?? "Schema error") }
+            if let m = self.mysql {
+                let (ok, schemaErr) = await SchemaService.initializeSchema(mysql: m)
+                if !ok { throw MySQLError.queryError(code: 0, message: schemaErr ?? "Schema error") }
+            }
 
-            let lastSync = try await lastCompletedSyncDate(mysql: mysql)
+            let lastSync: Date? = try await {
+                if let m = self.mysql { return try await lastCompletedSyncDate(mysql: m) ?? syncState.lastSyncDate }
+                return syncState.lastSyncDate
+            }()
             let distantPast = Calendar.current.date(from: DateComponents(year: 2000, month: 1, day: 1))!
             let globalQuerySince = lastSync.map { $0.addingTimeInterval(-7 * 24 * 3600) } ?? distantPast
 
@@ -1297,7 +1306,8 @@ final class SyncService: ObservableObject {
                 adaptiveQuerySince(for: key, cursors: cursors, globalQuerySince: globalQuerySince, lastSync: lastSync, forceDeepSweep: true)
             }
 
-            @MainActor func liveMySQL() async throws -> MySQLService {
+            @MainActor func liveMySQL() async throws -> MySQLService? {
+                guard mysqlEnabled else { return nil }
                 try await ensureMySQLConnected(config: config)
                 guard let m = self.mysql else { throw MySQLError.disconnected }
                 return m
@@ -1479,19 +1489,20 @@ final class SyncService: ObservableObject {
                 catch {}
             }
 
-            // Two-way place category + geofence definition sync
-            do {
-                let geoMySQL = try await liveMySQL()
-                do { try await GeofenceSyncService.syncPlaceCategories(mysql: geoMySQL) }
-                catch { print("[SyncService] Place category sync failed: \(error)") }
+            // Two-way place category + geofence definition sync — MySQL-backed.
+            if let geoMySQL = try await liveMySQL() {
+                do {
+                    do { try await GeofenceSyncService.syncPlaceCategories(mysql: geoMySQL) }
+                    catch { print("[SyncService] Place category sync failed: \(error)") }
 
-                let geofencesChanged = try await GeofenceSyncService.syncGeofences(mysql: geoMySQL)
-                if geofencesChanged {
-                    LocationService.shared.updateGeofences(GeoFence.loadAll())
-                    NotificationCenter.default.post(name: .geofencesDidSync, object: nil)
+                    let geofencesChanged = try await GeofenceSyncService.syncGeofences(mysql: geoMySQL)
+                    if geofencesChanged {
+                        LocationService.shared.updateGeofences(GeoFence.loadAll())
+                        NotificationCenter.default.post(name: .geofencesDidSync, object: nil)
+                    }
+                } catch {
+                    print("[SyncService] Geofence sync failed: \(error)")
                 }
-            } catch {
-                print("[SyncService] Geofence sync failed: \(error)")
             }
 
             print("[SyncService] Targeted sync completed: \(total) records, \(hkInaccessibleCount) HK-inaccessible")
@@ -1511,7 +1522,7 @@ final class SyncService: ObservableObject {
 
     // MARK: - Activity summary sync
 
-    private func syncActivitySummaries(mysql: MySQLService, since: Date?, until: Date? = nil) async throws -> Int {
+    private func syncActivitySummaries(mysql: MySQLService?, since: Date?, until: Date? = nil) async throws -> Int {
         let summaries = try await healthKit.fetchActivitySummaries(from: since, until: until)
         guard !summaries.isEmpty else { return 0 }
 
@@ -1567,7 +1578,7 @@ final class SyncService: ObservableObject {
             }
             if let sql {
                 try Task.checkCancellation()
-                try await mysql.execute(sql)
+                try await mysql?.execute(sql)
                 if let eaWriter, !summaryRows.isEmpty {
                     try await eaWriter.writeActivitySummaries(summaryRows)
                 }
@@ -1579,7 +1590,7 @@ final class SyncService: ObservableObject {
 
     // MARK: - Workout route sync
 
-    private func syncWorkoutRoutes(mysql: MySQLService, since: Date?, until: Date? = nil) async throws -> Int {
+    private func syncWorkoutRoutes(mysql: MySQLService?, since: Date?, until: Date? = nil) async throws -> Int {
         // Single-row INSERTs: each row contains locations_json with thousands of GPS
         // points, easily reaching megabytes per row. Batching would exceed max_allowed_packet.
         var total = 0
@@ -1619,7 +1630,7 @@ final class SyncService: ObservableObject {
                       (uuid, workout_uuid, start_date, location_count, locations_json)
                     VALUES (\(uuid), \(workoutUUID), \(startDate), \(count), \(locJSONQuoted))
                     """
-                    try await mysql.execute(sql)
+                    try await mysql?.execute(sql)
                     if let eaWriter {
                         try await eaWriter.writeWorkoutRoutes([HBWorkoutRouteRow(
                             uuid: route.uuid.uuidString,
@@ -1638,7 +1649,7 @@ final class SyncService: ObservableObject {
 
     // MARK: - Medication sync
 
-    private func syncMedications(mysql: MySQLService, since: Date?, until: Date? = nil) async throws -> Int {
+    private func syncMedications(mysql: MySQLService?, since: Date?, until: Date? = nil) async throws -> Int {
         if #available(iOS 26, *) {
             return try await syncMedicationsIOS26(mysql: mysql, since: since, until: until)
         }
@@ -1646,7 +1657,7 @@ final class SyncService: ObservableObject {
     }
 
     @available(iOS 26, *)
-    private func syncMedicationsIOS26(mysql: MySQLService, since: Date?, until: Date? = nil) async throws -> Int {
+    private func syncMedicationsIOS26(mysql: MySQLService?, since: Date?, until: Date? = nil) async throws -> Int {
         var total = 0
         var valueStrings: [String] = []
         var pendingRows: [HBMedicationRow] = []
@@ -1701,9 +1712,9 @@ final class SyncService: ObservableObject {
         return total
     }
 
-    private func flushMedicationBatch(_ values: [String], rows: [HBMedicationRow], mysql: MySQLService) async throws {
+    private func flushMedicationBatch(_ values: [String], rows: [HBMedicationRow], mysql: MySQLService?) async throws {
         try Task.checkCancellation()
-        try await mysql.execute("""
+        try await mysql?.execute("""
         INSERT IGNORE INTO health_medications
           (uuid,medication_name,dosage,log_status,start_date,end_date,source_name,source_bundle_id,device_name,metadata)
         VALUES \(values.joined(separator: ","))
@@ -1807,10 +1818,61 @@ final class SyncService: ObservableObject {
 
     // MARK: - Stale record reconciliation
 
-    // Runs `reconcileStaleRecords` against MySQL AND, if EA is enabled,
-    // the same slice via `eaWriter.reconcileSlice`. Single call site for
-    // every per-type sync method so both destinations stay in lock-step
-    // when Apple Health removes a sample.
+    /// Reconcile is split into at most this many time slices, each ≥ `minReconcileWindow`.
+    /// A bounded slice keeps both the MySQL anti-join DELETE and the single EA reconcile
+    /// request small even for the densest types (the Activity quantity types log a sample
+    /// every few minutes), which is what was overrunning `innodb_lock_wait_timeout` on
+    /// MySQL and dropping the connection on EA when the whole 7-day window went out at once.
+    private static let maxReconcileWindows = 48
+    private static let minReconcileWindow: TimeInterval = 3600  // 1 hour
+
+    private struct ReconcileWindow {
+        let lo: Date
+        let hi: Date          // inclusive upper bound (matches the `<=` both backends apply)
+        let uuids: [String]
+    }
+
+    /// Buckets the synced `(uuid, date)` pairs into ≤ `maxReconcileWindows` time slices.
+    /// `date` must be the value stored in the row's `start_date` (the sample's start date),
+    /// so a slice's range and its UUID set agree. Only populated slices are returned:
+    /// a slice with no synced UUIDs is never reconciled — we don't mass-delete a window's
+    /// rows because a query happened to return nothing for it (the finer-grained twin of the
+    /// all-empty guard in `reconcileEverywhere`). Both backends are driven by this identical
+    /// list, so they stay in lock-step.
+    ///
+    /// Adjacent slices use a 1 ms-trimmed upper bound so no boundary instant is claimed by two
+    /// slices (each carries a different UUID set; an overlap could delete a boundary row). The
+    /// final slice keeps `until` inclusive so a sample at exactly `until` is still covered.
+    private static func reconcileWindows(
+        since: Date, until: Date, validUUIDs: [String], dates: [Date]?
+    ) -> [ReconcileWindow] {
+        guard let dates, dates.count == validUUIDs.count, until > since else {
+            return [ReconcileWindow(lo: since, hi: until, uuids: validUUIDs)]
+        }
+        let span = until.timeIntervalSince(since)
+        let windowSize = max(span / Double(maxReconcileWindows), minReconcileWindow)
+        let lastIdx = max(0, Int((span / windowSize).rounded(.up)) - 1)
+
+        var buckets: [Int: [String]] = [:]
+        for (uuid, date) in zip(validUUIDs, dates) {
+            let raw = Int((date.timeIntervalSince(since) / windowSize).rounded(.down))
+            buckets[min(max(raw, 0), lastIdx), default: []].append(uuid)
+        }
+
+        return buckets.keys.sorted().map { idx in
+            let lo = since.addingTimeInterval(Double(idx) * windowSize)
+            let nominalHi = since.addingTimeInterval(Double(idx + 1) * windowSize)
+            let hi = nominalHi >= until ? until : nominalHi.addingTimeInterval(-0.001)
+            return ReconcileWindow(lo: lo, hi: hi, uuids: buckets[idx]!)
+        }
+    }
+
+    // Reconciles stale rows against MySQL AND, if EA is enabled, the same slices via
+    // `eaWriter.reconcileSlice`. Single call site for every per-type sync method so both
+    // destinations stay in lock-step when Apple Health removes a sample. When `dates` is
+    // supplied (parallel to `validUUIDs`) the [since, until] range is sub-windowed so each
+    // DELETE/request is bounded; sparse callers pass `dates == nil` for a single full-range
+    // slice (unchanged behavior, just upgraded to the anti-join DELETE below).
     private func reconcileEverywhere(
         table: String,
         typeColumn: String?,
@@ -1818,59 +1880,18 @@ final class SyncService: ObservableObject {
         since: Date,
         until: Date,
         validUUIDs: [String],
+        dates: [Date]? = nil,
         mysql: MySQLService,
         displayLabel: String
     ) async throws {
-        let mysqlDeleted = try await reconcileStaleRecords(
-            table: table, typeColumn: typeColumn, typeName: typeName,
-            since: since, until: until, validUUIDs: validUUIDs, mysql: mysql
+        guard !validUUIDs.isEmpty else { return }
+
+        let windows = Self.reconcileWindows(
+            since: since, until: until, validUUIDs: validUUIDs, dates: dates
         )
-        if mysqlDeleted > 0 {
-            print("[SyncService] Reconciled \(mysqlDeleted) stale \(displayLabel) records (MySQL)")
-        }
-        if let eaWriter {
-            let eaDeleted = try await eaWriter.reconcileSlice(
-                table: table,
-                typeColumn: typeColumn,
-                typeValue: typeName,
-                since: sqlDate(since),
-                until: sqlDate(until),
-                validUUIDs: validUUIDs
-            )
-            if eaDeleted > 0 {
-                print("[SyncService] Reconciled \(eaDeleted) stale \(displayLabel) records (EA)")
-            }
-        }
-    }
 
-    // Deletes database rows whose UUIDs no longer exist in HealthKit for a given
-    // table, type, and date range. This handles samples that were deleted or replaced
-    // in HealthKit (e.g. a third-party app editing an entry creates a new UUID and
-    // deletes the old one). Returns the number of stale rows removed.
-    private func reconcileStaleRecords(
-        table: String,
-        typeColumn: String?,
-        typeName: String?,
-        since: Date,
-        until: Date,
-        validUUIDs: [String],
-        mysql: MySQLService
-    ) async throws -> Int {
-        guard !validUUIDs.isEmpty else { return 0 }
-
-        let sinceStr = MySQLEscape.quote(sqlDate(since))
-        let untilStr = MySQLEscape.quote(sqlDate(until))
-        let typeFilter: String
-        if let typeColumn = typeColumn, let typeName = typeName {
-            typeFilter = " AND `\(typeColumn)` = '\(typeName)'"
-        } else {
-            typeFilter = ""
-        }
-
-        // Stage the valid UUID set into a temporary table so the DELETE evaluates
-        // every UUID at once. Chunking the UUIDs across separate `NOT IN` DELETEs
-        // is incorrect — each chunk would delete rows whose UUIDs live in the other
-        // chunks, wiping the very records we just inserted.
+        // Stage UUIDs into one connection-scoped temp table, refilled per slice, so we
+        // don't churn CREATE/DROP DDL per window.
         let tmpTable = "hb_reconcile_valid_uuids"
         try await mysql.execute("DROP TEMPORARY TABLE IF EXISTS `\(tmpTable)`")
         try await mysql.execute("""
@@ -1879,22 +1900,78 @@ final class SyncService: ObservableObject {
         )
         """)
 
-        // Insert in chunks to stay under max_allowed_packet.
+        var mysqlDeleted = 0
+        var eaDeleted = 0
+        for window in windows {
+            mysqlDeleted += try await reconcileMySQLSlice(
+                table: table, typeColumn: typeColumn, typeName: typeName,
+                since: window.lo, until: window.hi, validUUIDs: window.uuids,
+                mysql: mysql, tmpTable: tmpTable
+            )
+            if let eaWriter {
+                eaDeleted += try await eaWriter.reconcileSlice(
+                    table: table, typeColumn: typeColumn, typeValue: typeName,
+                    since: sqlDate(window.lo), until: sqlDate(window.hi),
+                    validUUIDs: window.uuids
+                )
+            }
+        }
+
+        // Connection-scoped; goes away on disconnect, and the next reconcile drops it first.
+        _ = try? await mysql.execute("DROP TEMPORARY TABLE IF EXISTS `\(tmpTable)`")
+
+        if mysqlDeleted > 0 {
+            print("[SyncService] Reconciled \(mysqlDeleted) stale \(displayLabel) records (MySQL)")
+        }
+        if eaDeleted > 0 {
+            print("[SyncService] Reconciled \(eaDeleted) stale \(displayLabel) records (EA)")
+        }
+    }
+
+    // Deletes database rows in one (table, type, [since, until]) slice whose UUID is not in
+    // `validUUIDs`, using the shared `tmpTable` (refilled per call). This handles samples
+    // deleted or replaced in HealthKit (e.g. a third-party app editing an entry creates a new
+    // UUID and deletes the old one). Returns the number of stale rows removed.
+    private func reconcileMySQLSlice(
+        table: String,
+        typeColumn: String?,
+        typeName: String?,
+        since: Date,
+        until: Date,
+        validUUIDs: [String],
+        mysql: MySQLService,
+        tmpTable: String
+    ) async throws -> Int {
+        guard !validUUIDs.isEmpty else { return 0 }
+
+        // Refill the staging table with just this slice's UUIDs, chunked to stay under
+        // max_allowed_packet.
+        _ = try await mysql.execute("TRUNCATE TABLE `\(tmpTable)`")
         for chunk in validUUIDs.chunked(into: 1000) {
             let values = chunk.map { "(\(MySQLEscape.quote($0)))" }.joined(separator: ",")
             try await mysql.execute("INSERT IGNORE INTO `\(tmpTable)` (uuid) VALUES \(values)")
         }
 
-        let deleted = try await mysql.execute("""
-        DELETE FROM `\(table)`
-        WHERE start_date >= \(sinceStr)
-          AND start_date <= \(untilStr)
-          \(typeFilter)
-          AND uuid NOT IN (SELECT uuid FROM `\(tmpTable)`)
-        """)
+        let sinceStr = MySQLEscape.quote(sqlDate(since))
+        let untilStr = MySQLEscape.quote(sqlDate(until))
+        let typeFilter: String
+        if let typeColumn = typeColumn, let typeName = typeName {
+            typeFilter = " AND t.`\(typeColumn)` = '\(typeName)'"
+        } else {
+            typeFilter = ""
+        }
 
-        // Free the temp rows; the table itself is connection-scoped and goes away on disconnect.
-        _ = try? await mysql.execute("DROP TEMPORARY TABLE IF EXISTS `\(tmpTable)`")
+        // Anti-join (LEFT JOIN … IS NULL) rather than `NOT IN (SELECT …)`: MySQL plans it as a
+        // far lighter, index-driven hash anti-join instead of a per-row subquery over a
+        // full-range scan, so it holds locks for a fraction of the time.
+        let deleted = try await mysql.execute("""
+        DELETE t FROM `\(table)` AS t
+        LEFT JOIN `\(tmpTable)` AS v ON v.uuid = t.uuid
+        WHERE t.start_date >= \(sinceStr)
+          AND t.start_date <= \(untilStr)
+          \(typeFilter)
+          AND v.uuid IS NULL
+        """)
 
         return Int(deleted)
     }
@@ -1908,7 +1985,7 @@ final class SyncService: ObservableObject {
     // longer exist in HealthKit (e.g. samples deleted or replaced by a third-party app).
     private func syncQuantityType(
         typeDesc: QuantityTypeDescriptor,
-        mysql: MySQLService,
+        mysql: MySQLService?,
         since: Date?,
         until: Date? = nil,
         insertBatchSize: Int = batchSize,
@@ -1918,30 +1995,42 @@ final class SyncService: ObservableObject {
         let unitStr  = MySQLEscape.escapeString(typeDesc.unitString)
         var total = 0
         var syncedUUIDs: [String] = []
+        var syncedDates: [Date] = []
 
         try await healthKit.streamQuantitySamples(typeID: typeDesc.hkIdentifier, from: since, until: until) { hkBatch in
             for batch in hkBatch.chunked(into: insertBatchSize) {
-                let sql: String = autoreleasepool {
-                    let valuesList = batch.map { s -> String in
-                        let uuid   = MySQLEscape.quote(s.uuid.uuidString)
-                        let value  = MySQLEscape.quoteDouble(s.quantity.doubleValue(for: typeDesc.unit))
-                        let start  = MySQLEscape.quote(sqlDate(s.startDate))
-                        let end    = MySQLEscape.quote(sqlDate(s.endDate))
-                        let src    = MySQLEscape.quote(s.sourceDisplayName)
-                        let bundle = MySQLEscape.quote(s.sourceBundleID)
-                        let device = MySQLEscape.quote(s.deviceName)
-                        let meta   = MySQLEscape.quote(s.jsonMetadata())
-                        return "(\(uuid),'\(typeName)',\(value),'\(unitStr)',\(start),\(end),\(src),\(bundle),\(device),\(meta))"
-                    }.joined(separator: ",")
-                    return """
-                    INSERT IGNORE INTO health_quantity_samples
-                      (uuid,type,value,unit,start_date,end_date,source_name,source_bundle_id,device_name,metadata)
-                    VALUES \(valuesList)
-                    """
-                }
-                syncedUUIDs.append(contentsOf: batch.map { $0.uuid.uuidString })
                 try Task.checkCancellation()
-                try await mysql.execute(sql)
+                // MySQL path only: building the SQL string and tracking UUIDs for
+                // reconcile is skipped during export (mysql == nil) so an unwindowed
+                // full-history pass doesn't accumulate millions of UUID strings.
+                if let mysql {
+                    let sql: String = autoreleasepool {
+                        let valuesList = batch.map { s -> String in
+                            let uuid   = MySQLEscape.quote(s.uuid.uuidString)
+                            let value  = MySQLEscape.quoteDouble(s.quantity.doubleValue(for: typeDesc.unit))
+                            let start  = MySQLEscape.quote(sqlDate(s.startDate))
+                            let end    = MySQLEscape.quote(sqlDate(s.endDate))
+                            let src    = MySQLEscape.quote(s.sourceDisplayName)
+                            let bundle = MySQLEscape.quote(s.sourceBundleID)
+                            let device = MySQLEscape.quote(s.deviceName)
+                            let meta   = MySQLEscape.quote(s.jsonMetadata())
+                            return "(\(uuid),'\(typeName)',\(value),'\(unitStr)',\(start),\(end),\(src),\(bundle),\(device),\(meta))"
+                        }.joined(separator: ",")
+                        return """
+                        INSERT IGNORE INTO health_quantity_samples
+                          (uuid,type,value,unit,start_date,end_date,source_name,source_bundle_id,device_name,metadata)
+                        VALUES \(valuesList)
+                        """
+                    }
+                    // Only track UUIDs when a reconcile will run (since != nil).
+                    // A full-range re-sync (since == nil) skips this so a dense
+                    // type doesn't accumulate millions of UUID strings.
+                    if since != nil {
+                        syncedUUIDs.append(contentsOf: batch.map { $0.uuid.uuidString })
+                        syncedDates.append(contentsOf: batch.map { $0.startDate })
+                    }
+                    try await mysql.execute(sql)
+                }
                 if let eaWriter {
                     let rows: [HBQuantityRow] = batch.map { s in
                         HBQuantityRow(
@@ -1966,11 +2055,11 @@ final class SyncService: ObservableObject {
 
         // Reconcile: remove DB rows whose UUIDs no longer exist in HealthKit for this date range.
         // Only reconcile when re-querying an overlap window (since != nil), not on first full sync.
-        if let since = since, !syncedUUIDs.isEmpty {
+        if let mysql, let since = since, !syncedUUIDs.isEmpty {
             try await reconcileEverywhere(
                 table: "health_quantity_samples", typeColumn: "type", typeName: typeName,
-                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,
-                displayLabel: typeDesc.displayName
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, dates: syncedDates,
+                mysql: mysql, displayLabel: typeDesc.displayName
             )
         }
 
@@ -1981,7 +2070,7 @@ final class SyncService: ObservableObject {
 
     private func syncCategoryType(
         typeDesc: CategoryTypeDescriptor,
-        mysql: MySQLService,
+        mysql: MySQLService?,
         since: Date?,
         until: Date? = nil,
         insertBatchSize: Int = batchSize
@@ -1989,29 +2078,39 @@ final class SyncService: ObservableObject {
         let typeName = MySQLEscape.escapeString(typeDesc.id)
         var total = 0
         var syncedUUIDs: [String] = []
+        var syncedDates: [Date] = []
         try await healthKit.streamCategorySamples(typeID: typeDesc.hkIdentifier, from: since, until: until) { hkBatch in
             for batch in hkBatch.chunked(into: insertBatchSize) {
-                let sql: String = autoreleasepool {
-                    let values = batch.map { s -> String in
-                        let uuid   = MySQLEscape.quote(s.uuid.uuidString)
-                        let value  = s.value
-                        let label  = MySQLEscape.quote(typeDesc.valueLabels[value] ?? "\(value)")
-                        let start  = MySQLEscape.quote(sqlDate(s.startDate))
-                        let end    = MySQLEscape.quote(sqlDate(s.endDate))
-                        let src    = MySQLEscape.quote(s.sourceDisplayName)
-                        let bundle = MySQLEscape.quote(s.sourceBundleID)
-                        let device = MySQLEscape.quote(s.deviceName)
-                        return "(\(uuid),'\(typeName)',\(value),\(label),\(start),\(end),\(src),\(bundle),\(device),NULL)"
-                    }.joined(separator: ",")
-                    return """
-                    INSERT IGNORE INTO health_category_samples
-                      (uuid,type,value,value_label,start_date,end_date,source_name,source_bundle_id,device_name,metadata)
-                    VALUES \(values)
-                    """
-                }
-                syncedUUIDs.append(contentsOf: batch.map { $0.uuid.uuidString })
                 try Task.checkCancellation()
-                try await mysql.execute(sql)
+                // MySQL path only — skipped during export (mysql == nil), see syncQuantityType.
+                if let mysql {
+                    let sql: String = autoreleasepool {
+                        let values = batch.map { s -> String in
+                            let uuid   = MySQLEscape.quote(s.uuid.uuidString)
+                            let value  = s.value
+                            let label  = MySQLEscape.quote(typeDesc.valueLabels[value] ?? "\(value)")
+                            let start  = MySQLEscape.quote(sqlDate(s.startDate))
+                            let end    = MySQLEscape.quote(sqlDate(s.endDate))
+                            let src    = MySQLEscape.quote(s.sourceDisplayName)
+                            let bundle = MySQLEscape.quote(s.sourceBundleID)
+                            let device = MySQLEscape.quote(s.deviceName)
+                            return "(\(uuid),'\(typeName)',\(value),\(label),\(start),\(end),\(src),\(bundle),\(device),NULL)"
+                        }.joined(separator: ",")
+                        return """
+                        INSERT IGNORE INTO health_category_samples
+                          (uuid,type,value,value_label,start_date,end_date,source_name,source_bundle_id,device_name,metadata)
+                        VALUES \(values)
+                        """
+                    }
+                    // Only track UUIDs when a reconcile will run (since != nil).
+                    // A full-range re-sync (since == nil) skips this so a dense
+                    // type doesn't accumulate millions of UUID strings.
+                    if since != nil {
+                        syncedUUIDs.append(contentsOf: batch.map { $0.uuid.uuidString })
+                        syncedDates.append(contentsOf: batch.map { $0.startDate })
+                    }
+                    try await mysql.execute(sql)
+                }
                 if let eaWriter {
                     let rows: [HBCategoryRow] = batch.map { s in
                         HBCategoryRow(
@@ -2033,18 +2132,18 @@ final class SyncService: ObservableObject {
             }
         }
 
-        if let since = since, !syncedUUIDs.isEmpty {
+        if let mysql, let since = since, !syncedUUIDs.isEmpty {
             try await reconcileEverywhere(
                 table: "health_category_samples", typeColumn: "type", typeName: typeName,
-                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,
-                displayLabel: "\(typeDesc.displayName) category"
+                since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, dates: syncedDates,
+                mysql: mysql, displayLabel: "\(typeDesc.displayName) category"
             )
         }
 
         return total
     }
 
-    private func syncCategorySamples(mysql: MySQLService, since: Date?, until: Date? = nil, insertBatchSize: Int = batchSize) async throws -> Int {
+    private func syncCategorySamples(mysql: MySQLService?, since: Date?, until: Date? = nil, insertBatchSize: Int = batchSize) async throws -> Int {
         var total = 0
         for typeDesc in HealthDataTypes.allCategoryTypes {
             total += try await syncCategoryType(typeDesc: typeDesc, mysql: mysql, since: since, until: until, insertBatchSize: insertBatchSize)
@@ -2054,7 +2153,7 @@ final class SyncService: ObservableObject {
 
     // MARK: - Workout sync
 
-    private func syncWorkouts(mysql: MySQLService, since: Date?, until: Date? = nil) async throws -> Int {
+    private func syncWorkouts(mysql: MySQLService?, since: Date?, until: Date? = nil) async throws -> Int {
         var total = 0
         var syncedUUIDs: [String] = []
         try await healthKit.streamWorkouts(from: since, until: until) { workouts in
@@ -2083,9 +2182,11 @@ final class SyncService: ObservableObject {
                     VALUES \(values)
                     """
                 }
-                syncedUUIDs.append(contentsOf: batch.map { $0.uuid.uuidString })
                 try Task.checkCancellation()
-                try await mysql.execute(sql)
+                if let mysql {
+                    syncedUUIDs.append(contentsOf: batch.map { $0.uuid.uuidString })
+                    try await mysql.execute(sql)
+                }
                 if let eaWriter {
                     let rows: [HBWorkoutRow] = batch.map { w in
                         HBWorkoutRow(
@@ -2110,7 +2211,7 @@ final class SyncService: ObservableObject {
             }
         }
 
-        if let since = since, !syncedUUIDs.isEmpty {
+        if let mysql, let since = since, !syncedUUIDs.isEmpty {
             try await reconcileEverywhere(
                 table: "health_workouts", typeColumn: nil, typeName: nil,
                 since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,
@@ -2123,7 +2224,7 @@ final class SyncService: ObservableObject {
 
     // MARK: - Blood pressure sync
 
-    private func syncBloodPressure(mysql: MySQLService, since: Date?, until: Date? = nil) async throws -> Int {
+    private func syncBloodPressure(mysql: MySQLService?, since: Date?, until: Date? = nil) async throws -> Int {
         let correlations = try await healthKit.fetchBloodPressure(from: since, until: until)
         guard !correlations.isEmpty else { return 0 }
 
@@ -2169,12 +2270,12 @@ final class SyncService: ObservableObject {
               (uuid,systolic,diastolic,start_date,source_name,device_name,metadata)
             VALUES \(values.joined(separator: ","))
             """
-            try await mysql.execute(sql)
+            try await mysql?.execute(sql)
             if let eaWriter { try await eaWriter.writeBloodPressure(bpRows) }
             total += values.count
         }
 
-        if let since = since, !syncedUUIDs.isEmpty {
+        if let mysql, let since = since, !syncedUUIDs.isEmpty {
             try await reconcileEverywhere(
                 table: "health_blood_pressure", typeColumn: nil, typeName: nil,
                 since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,
@@ -2187,7 +2288,7 @@ final class SyncService: ObservableObject {
 
     // MARK: - ECG sync
 
-    private func syncECG(mysql: MySQLService, since: Date?, until: Date? = nil) async throws -> Int {
+    private func syncECG(mysql: MySQLService?, since: Date?, until: Date? = nil) async throws -> Int {
         let recordings = try await healthKit.fetchECG(from: since, until: until)
         guard !recordings.isEmpty else { return 0 }
 
@@ -2222,7 +2323,7 @@ final class SyncService: ObservableObject {
               (uuid,classification,average_heart_rate,sampling_frequency,voltage_measurements,start_date,source_name,metadata)
             VALUES (\(uuid),\(cls),\(avgHR),\(freq),\(voltageJSON),\(start),\(src),NULL)
             """
-            try await mysql.execute(sql)
+            try await mysql?.execute(sql)
             if let eaWriter {
                 // Reconstruct the JSON string without SQL escaping for the EA payload.
                 let mvUnit = HKUnit(from: "mV")
@@ -2245,7 +2346,7 @@ final class SyncService: ObservableObject {
             total += 1
         }
 
-        if let since = since, !syncedUUIDs.isEmpty {
+        if let mysql, let since = since, !syncedUUIDs.isEmpty {
             try await reconcileEverywhere(
                 table: "health_ecg", typeColumn: nil, typeName: nil,
                 since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,
@@ -2258,7 +2359,7 @@ final class SyncService: ObservableObject {
 
     // MARK: - Audiogram sync
 
-    private func syncAudiograms(mysql: MySQLService, since: Date?, until: Date? = nil) async throws -> Int {
+    private func syncAudiograms(mysql: MySQLService?, since: Date?, until: Date? = nil) async throws -> Int {
         let audiograms = try await healthKit.fetchAudiograms(from: since, until: until)
         guard !audiograms.isEmpty else { return 0 }
 
@@ -2291,7 +2392,7 @@ final class SyncService: ObservableObject {
 
             if valueStrings.count >= batchSize {
                 try Task.checkCancellation()
-                try await mysql.execute("""
+                try await mysql?.execute("""
                 INSERT IGNORE INTO health_audiograms
                   (uuid,sensitivity_points,start_date,source_name,metadata)
                 VALUES \(valueStrings.joined(separator: ","))
@@ -2304,7 +2405,7 @@ final class SyncService: ObservableObject {
         }
         if !valueStrings.isEmpty {
             try Task.checkCancellation()
-            try await mysql.execute("""
+            try await mysql?.execute("""
             INSERT IGNORE INTO health_audiograms
               (uuid,sensitivity_points,start_date,source_name,metadata)
             VALUES \(valueStrings.joined(separator: ","))
@@ -2313,7 +2414,7 @@ final class SyncService: ObservableObject {
             total += valueStrings.count
         }
 
-        if let since = since, !syncedUUIDs.isEmpty {
+        if let mysql, let since = since, !syncedUUIDs.isEmpty {
             try await reconcileEverywhere(
                 table: "health_audiograms", typeColumn: nil, typeName: nil,
                 since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,
@@ -2326,7 +2427,7 @@ final class SyncService: ObservableObject {
 
     // MARK: - Vision prescription sync
 
-    private func syncVisionPrescriptions(mysql: MySQLService, since: Date?, until: Date? = nil) async throws -> Int {
+    private func syncVisionPrescriptions(mysql: MySQLService?, since: Date?, until: Date? = nil) async throws -> Int {
         let prescriptions = try await healthKit.fetchVisionPrescriptions(from: since, until: until)
         guard !prescriptions.isEmpty else { return 0 }
 
@@ -2433,7 +2534,7 @@ final class SyncService: ObservableObject {
 
             if valueStrings.count >= batchSize {
                 try Task.checkCancellation()
-                try await mysql.execute("""
+                try await mysql?.execute("""
                 INSERT IGNORE INTO health_vision_prescriptions
                   (uuid,start_date,end_date,prescription_type,
                    right_eye_sphere,right_eye_cylinder,right_eye_axis,right_eye_add_power,
@@ -2451,7 +2552,7 @@ final class SyncService: ObservableObject {
         }
         if !valueStrings.isEmpty {
             try Task.checkCancellation()
-            try await mysql.execute("""
+            try await mysql?.execute("""
             INSERT IGNORE INTO health_vision_prescriptions
               (uuid,start_date,end_date,prescription_type,
                right_eye_sphere,right_eye_cylinder,right_eye_axis,right_eye_add_power,
@@ -2465,7 +2566,7 @@ final class SyncService: ObservableObject {
             total += valueStrings.count
         }
 
-        if let since = since, !syncedUUIDs.isEmpty {
+        if let mysql, let since = since, !syncedUUIDs.isEmpty {
             try await reconcileEverywhere(
                 table: "health_vision_prescriptions", typeColumn: nil, typeName: nil,
                 since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,
@@ -2478,7 +2579,7 @@ final class SyncService: ObservableObject {
 
     // MARK: - State of Mind sync
 
-    private func syncStateOfMind(mysql: MySQLService, since: Date?, until: Date? = nil) async throws -> Int {
+    private func syncStateOfMind(mysql: MySQLService?, since: Date?, until: Date? = nil) async throws -> Int {
         if #available(iOS 18, *) {
             return try await syncStateOfMindIOS18(mysql: mysql, since: since, until: until)
         }
@@ -2486,7 +2587,7 @@ final class SyncService: ObservableObject {
     }
 
     @available(iOS 18, *)
-    private func syncStateOfMindIOS18(mysql: MySQLService, since: Date?, until: Date? = nil) async throws -> Int {
+    private func syncStateOfMindIOS18(mysql: MySQLService?, since: Date?, until: Date? = nil) async throws -> Int {
         let samples = try await healthKit.fetchStateOfMind(from: since, until: until)
         guard !samples.isEmpty else { return 0 }
 
@@ -2530,7 +2631,7 @@ final class SyncService: ObservableObject {
 
             if valueStrings.count >= batchSize {
                 try Task.checkCancellation()
-                try await mysql.execute("""
+                try await mysql?.execute("""
                 INSERT IGNORE INTO health_state_of_mind
                   (uuid,start_date,end_date,kind,valence,valence_classification,
                    labels_json,associations_json,source_name,source_bundle_id,device_name)
@@ -2544,7 +2645,7 @@ final class SyncService: ObservableObject {
         }
         if !valueStrings.isEmpty {
             try Task.checkCancellation()
-            try await mysql.execute("""
+            try await mysql?.execute("""
             INSERT IGNORE INTO health_state_of_mind
               (uuid,start_date,end_date,kind,valence,valence_classification,
                labels_json,associations_json,source_name,source_bundle_id,device_name)
@@ -2554,7 +2655,7 @@ final class SyncService: ObservableObject {
             total += valueStrings.count
         }
 
-        if let since = since, !syncedUUIDs.isEmpty {
+        if let mysql, let since = since, !syncedUUIDs.isEmpty {
             try await reconcileEverywhere(
                 table: "health_state_of_mind", typeColumn: nil, typeName: nil,
                 since: since, until: until ?? Date(), validUUIDs: syncedUUIDs, mysql: mysql,

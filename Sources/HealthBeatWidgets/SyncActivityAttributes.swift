@@ -10,5 +10,6 @@ struct SyncActivityAttributes: ActivityAttributes {
         var operation: String
         var recordsInserted: Int
         var isFullSync: Bool
+        var progress: Double = 0   // 0…1 overall progress across the whole sync
     }
 }

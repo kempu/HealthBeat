@@ -80,6 +80,10 @@
 		AABB0000000000000002004B /* BackendWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001004A /* BackendWriter.swift */; };
 		AABB0000000000000002004C /* EAService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001004B /* EAService.swift */; };
 		AABB0000000000000002004D /* EASettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000001004C /* EASettingsView.swift */; };
+		AABB00000000000000F1DC02 /* DumpCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000F1DC01 /* DumpCrypto.swift */; };
+		AABB00000000000000F1DC04 /* DumpExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000F1DC03 /* DumpExport.swift */; };
+		AABB00000000000000F1DC06 /* DumpDrain.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000F1DC05 /* DumpDrain.swift */; };
+		AABB00000000000000F1DC08 /* DumpUpload.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000F1DC07 /* DumpUpload.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -183,6 +187,10 @@
 		AABB0000000000000001004A /* BackendWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendWriter.swift; sourceTree = "<group>"; };
 		AABB0000000000000001004B /* EAService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EAService.swift; sourceTree = "<group>"; };
 		AABB0000000000000001004C /* EASettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EASettingsView.swift; sourceTree = "<group>"; };
+		AABB00000000000000F1DC01 /* DumpCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DumpCrypto.swift; sourceTree = "<group>"; };
+		AABB00000000000000F1DC03 /* DumpExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DumpExport.swift; sourceTree = "<group>"; };
+		AABB00000000000000F1DC05 /* DumpDrain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DumpDrain.swift; sourceTree = "<group>"; };
+		AABB00000000000000F1DC07 /* DumpUpload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DumpUpload.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -267,6 +275,10 @@
 				AABB0000000000000001003D /* GeofenceSyncService.swift */,
 				AABB0000000000000001004A /* BackendWriter.swift */,
 				AABB0000000000000001004B /* EAService.swift */,
+				AABB00000000000000F1DC01 /* DumpCrypto.swift */,
+				AABB00000000000000F1DC03 /* DumpExport.swift */,
+				AABB00000000000000F1DC05 /* DumpDrain.swift */,
+				AABB00000000000000F1DC07 /* DumpUpload.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -558,6 +570,10 @@
 				AABB0000000000000002004B /* BackendWriter.swift in Sources */,
 				AABB0000000000000002004C /* EAService.swift in Sources */,
 				AABB0000000000000002004D /* EASettingsView.swift in Sources */,
+				AABB00000000000000F1DC02 /* DumpCrypto.swift in Sources */,
+				AABB00000000000000F1DC04 /* DumpExport.swift in Sources */,
+				AABB00000000000000F1DC06 /* DumpDrain.swift in Sources */,
+				AABB00000000000000F1DC08 /* DumpUpload.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -708,7 +724,7 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/HealthBeat/Resources/HealthBeat.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = MDR86YLBVY;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/HealthBeat/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Health Beat";
@@ -734,7 +750,7 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/HealthBeat/Resources/HealthBeat.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = MDR86YLBVY;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/HealthBeat/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Health Beat";
@@ -758,7 +774,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = MDR86YLBVY;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/HealthBeatWidgets/WidgetInfo.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
@@ -782,7 +798,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = MDR86YLBVY;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/HealthBeatWidgets/WidgetInfo.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.6;

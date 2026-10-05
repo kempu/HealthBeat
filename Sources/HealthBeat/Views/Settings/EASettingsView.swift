@@ -14,6 +14,7 @@ struct EASettingsView: View {
     @State private var savedConfirmation = false
     @State private var testResult: TestResult?
     @State private var isTesting = false
+    @State private var confirmEAReset = false
 
     enum TestResult: Equatable {
         case success(serverTime: String, schemaVersion: Int, maxBatch: Int)
@@ -106,19 +107,35 @@ struct EASettingsView: View {
                     .font(.caption)
             }
 
-            // Backfill of existing MySQL data now lives server-side in
-            // the EA web app at /health-data → Settings → "Historical
-            // backfill from HealthBeat MySQL". A direct DB → DB copy on
-            // the same LAN as both databases is dramatically faster and
-            // immune to the URLSession idle-timeout and fat-JSON issues
-            // that plague a per-row HTTP backfill from the phone.
             Section {
-                Label("Backfill historical data from the EA web UI", systemImage: "arrow.up.right.square")
+                Label("Run a full sync from the Sync tab", systemImage: "arrow.clockwise.icloud")
                     .font(.callout)
-                Text("Open /health-data → Settings on the EA web app. Enter your HealthBeat MySQL connection there and tap \"Start backfill\".")
+                Text("The first sync after enabling EA exports all Apple Health data (keep the screen on for the quick export), uploads it to EA in the background, and processes it server-side. Later syncs are incremental. Trigger it from the Sync tab.")
                     .font(.caption).foregroundStyle(.secondary)
             } header: {
-                Text("Historical backfill")
+                Text("Full sync")
+            }
+
+            Section {
+                Button(role: .destructive) {
+                    confirmEAReset = true
+                } label: {
+                    Label("Re-sync EA from scratch", systemImage: "arrow.triangle.2.circlepath")
+                }
+            } footer: {
+                Text("Use this if EA's data was wiped on the server, or you want to rebuild it. It drops EA's baseline so the next Full Sync re-exports everything to EA (replacing its tables). MySQL is left untouched.")
+                    .font(.caption)
+            }
+            .confirmationDialog(
+                "Re-sync EA from scratch?",
+                isPresented: $confirmEAReset, titleVisibility: .visible
+            ) {
+                Button("Drop EA baseline", role: .destructive) {
+                    NotificationCenter.default.post(name: .healthBeatEAResetRequested, object: nil)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The next Full Sync will re-export all Apple Health data to EA, replacing its current tables. MySQL is unaffected.")
             }
         }
         .navigationTitle("Executive Assistant")

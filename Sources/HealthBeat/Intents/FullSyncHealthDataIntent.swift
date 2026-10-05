@@ -4,7 +4,7 @@ import Foundation
 struct FullSyncHealthDataIntent: AppIntent {
     static var title: LocalizedStringResource = "Full Sync Health Data"
     static var description = IntentDescription(
-        "Runs a full historical backfill of all your Apple Health data to your MySQL database. This may take a long time.",
+        "Runs a full sync — exports all your Apple Health data and delivers it to every enabled destination that still needs a complete baseline. This may take a long time.",
         categoryName: "Sync"
     )
 

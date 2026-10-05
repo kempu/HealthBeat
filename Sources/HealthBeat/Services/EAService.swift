@@ -134,20 +134,27 @@ actor EAService {
         }
         struct ReconcileResponse: Decodable { let deleted: Int }
 
-        // The reconcile endpoint accepts a single payload — chunk only if
-        // the UUID list is huge enough to risk exceeding max_post_size
-        // (~1MB by default). 5000 UUIDs * 36 chars ≈ 180KB, well under.
-        let chunkSize = 5000
+        // Reconcile MUST go out as a single request: the server deletes
+        // `WHERE … uuid NOT IN (valid_uuids)` for the slice, so splitting the
+        // UUID list across requests would make each request delete the rows
+        // whose UUIDs live in the *other* request (wiping records we just
+        // synced). The list can only be made smaller by narrowing the
+        // (since, until) time window, which is the caller's job.
+        //
+        // The reconcile endpoint stages the UUID set in a server-side temp
+        // table (no per-UUID SQL placeholder, so MySQL's 65,535-placeholder
+        // limit no longer applies) — the only remaining bound is the request
+        // body, capped at 64 MB by the ingest host. 500k UUIDs ≈ 19 MB, well
+        // under that, and is ~12× the entire current step-count history, so
+        // this is effectively "no realistic ceiling" while still guarding
+        // against a pathological multi-megabyte body. The list still cannot be
+        // split across requests (each NOT IN would delete the rows held by the
+        // others), so above this we ask the caller to narrow the time window.
+        // (Was 5k — a stale guess at a 1 MB body limit — which blocked Full
+        // Sync's step-count reconcile.)
+        let maxReconcileUUIDs = 500_000
         var totalDeleted = 0
-        let chunks = validUUIDs.chunked(into: chunkSize)
-        // Walk every chunk; each pass narrows the surviving set further.
-        // Order doesn't matter because we DELETE … NOT IN per chunk,
-        // and the union of NOT-IN sets equals NOT-IN union.
-        // (Important: a row absent from chunk A but present in chunk B
-        // would be deleted by chunk A. So we cannot chunk this naively
-        // — fall back to a single call when the list won't fit and let
-        // the server fail loudly.)
-        if chunks.count > 1 {
+        if validUUIDs.count > maxReconcileUUIDs {
             throw EAError.http(413, "reconcile_too_many_uuids:\(validUUIDs.count) — split the time window instead")
         }
         let body = ReconcileBody(
@@ -159,6 +166,41 @@ actor EAService {
         let res: ReconcileResponse = try await perform(req)
         totalDeleted += res.deleted
         return totalDeleted
+    }
+
+    /// `POST /api/v1/healthbeat/bulk-import/run/{run}/key` — hands EA the per-run
+    /// AES-256-GCM key (base64) so its queued import job can decrypt the dump
+    /// files already uploaded for this run. Sent in a SEPARATE request from the
+    /// ciphertext upload (which goes over the background session): the file and
+    /// its key never travel together. Returns how many table jobs were dispatched.
+    @discardableResult
+    func postDumpKey(runID: String, keyBase64: String) async throws -> Int {
+        guard config.isConfigured else { throw EAError.notConfigured }
+        struct KeyBody: Encodable { let key: String }
+        struct KeyResponse: Decodable { let dispatched: Int }
+        let body = try encoder.encode(KeyBody(key: keyBase64))
+        let req = try buildRequest(
+            path: "/api/v1/healthbeat/bulk-import/run/\(runID)/key", method: "POST", bodyData: body)
+        let res: KeyResponse = try await perform(req)
+        return res.dispatched
+    }
+
+    struct BulkImportStatus: Decodable {
+        let run_id: String
+        let status: String          // "uploading" | "awaiting_key" | "processing" | "completed" | "failed"
+        let tables_total: Int
+        let tables_completed: Int
+        let rows_imported: Int
+        let rows_expected: Int?     // sum of expected rows across tables (advisory)
+        let error_message: String?
+    }
+
+    /// `GET /api/v1/healthbeat/bulk-import/{run}/status` — progress poll for the
+    /// server-side import job(s) of a run.
+    func bulkImportStatus(runID: String) async throws -> BulkImportStatus {
+        let req = try buildRequest(
+            path: "/api/v1/healthbeat/bulk-import/\(runID)/status", method: "GET", bodyData: nil)
+        return try await perform(req)
     }
 
     /// `GET /api/v1/healthbeat/geofences?since=…` — used by the bidirectional pull.
@@ -197,22 +239,34 @@ actor EAService {
         return req
     }
 
+    /// Number of attempts per request. A Full Sync fires thousands of
+    /// requests over many minutes, so an occasional transient hiccup (a
+    /// dropped TCP connection, an HTTP/2 GOAWAY mid-flight, a 408/429, a 5xx
+    /// blip) is statistically inevitable. All ingest/reconcile endpoints are
+    /// idempotent (upsert by natural key / `DELETE … NOT IN`), so retrying is
+    /// always safe — even if the original request actually reached the server
+    /// and only the response was lost. Without this, a single transient
+    /// failure surfaces as "EA transport: The network connection was lost" /
+    /// "HTTP 408" and aborts the entire category.
+    private static let maxAttempts = 5
+
     private func perform<T: Decodable>(_ request: URLRequest) async throws -> T {
-        // Retry only on transient 5xx; 4xx is the caller's fault — surface it.
         var lastError: EAError?
-        for attempt in 0..<3 {
+        for attempt in 0..<Self.maxAttempts {
+            let isLast = attempt == Self.maxAttempts - 1
             do {
                 let (data, response) = try await session.data(for: request)
                 guard let http = response as? HTTPURLResponse else {
                     throw EAError.http(0, nil)
                 }
-                if http.statusCode >= 500 {
+                // Transient HTTP — retry: 5xx (server), 408 (request timeout),
+                // 429 (rate limit). Everything else 4xx (400/401/403/413/422)
+                // is a genuine client error and is surfaced immediately.
+                if http.statusCode >= 500 || http.statusCode == 408 || http.statusCode == 429 {
                     lastError = .http(http.statusCode, String(data: data, encoding: .utf8))
-                    if attempt < 2 {
-                        try? await Task.sleep(nanoseconds: UInt64(pow(2.0, Double(attempt)) * 1_000_000_000))
-                        continue
-                    }
-                    throw lastError!
+                    if isLast { throw lastError! }
+                    try? await Task.sleep(nanoseconds: Self.backoffNanos(attempt))
+                    continue
                 }
                 guard (200..<300).contains(http.statusCode) else {
                     throw EAError.http(http.statusCode, String(data: data, encoding: .utf8))
@@ -224,11 +278,38 @@ actor EAService {
                 }
             } catch let e as EAError {
                 throw e
+            } catch let urlError as URLError where Self.isRetryableTransport(urlError) && !isLast {
+                // Connection lost/reset, timeout, host briefly unreachable, etc.
+                // — back off and retry instead of failing the whole sync.
+                lastError = .transport(urlError)
+                try? await Task.sleep(nanoseconds: Self.backoffNanos(attempt))
+                continue
             } catch {
                 throw EAError.transport(error)
             }
         }
         throw lastError ?? .http(0, nil)
+    }
+
+    /// Exponential backoff with a 30s cap: 1s, 2s, 4s, 8s, 16s.
+    private static func backoffNanos(_ attempt: Int) -> UInt64 {
+        let seconds = min(pow(2.0, Double(attempt)), 30)
+        return UInt64(seconds * 1_000_000_000)
+    }
+
+    /// Transient transport failures worth retrying. Deliberately excludes
+    /// `.cancelled` (user/Task cancellation must propagate) and hard config
+    /// errors (bad URL, etc.) which won't fix themselves on retry.
+    private static func isRetryableTransport(_ e: URLError) -> Bool {
+        switch e.code {
+        case .networkConnectionLost, .timedOut, .cannotConnectToHost,
+             .cannotFindHost, .dnsLookupFailed, .notConnectedToInternet,
+             .secureConnectionFailed, .resourceUnavailable,
+             .httpTooManyRedirects, .badServerResponse:
+            return true
+        default:
+            return false
+        }
     }
 }
 

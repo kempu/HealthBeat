@@ -40,9 +40,10 @@ protocol BackendWriter: Sendable {
     func writeSyncLog(_ row: HBSyncLogRow) async throws
 
     /// Delete rows in a (table[, type], date-window) slice whose UUID is
-    /// NOT in `validUUIDs`. Mirrors `SyncService.reconcileStaleRecords`
-    /// so EA stays in lock-step with Apple Health when samples are
-    /// removed on-device. `table` is the unprefixed name HealthBeat
+    /// NOT in `validUUIDs`. Mirrors `SyncService.reconcileMySQLSlice`
+    /// (one slice of a sub-windowed reconcile) so EA stays in lock-step
+    /// with Apple Health when samples are removed on-device. `table` is
+    /// the unprefixed name HealthBeat
     /// itself uses (e.g. `health_quantity_samples`); the EA writer maps
     /// it to the matching `hb_*` table server-side.
     func reconcileSlice(

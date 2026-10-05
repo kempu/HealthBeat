@@ -28,7 +28,7 @@ struct HealthBeatShortcuts: AppShortcutsProvider {
             phrases: [
                 "Full sync with \(.applicationName)",
                 "Run full \(.applicationName) sync",
-                "Backfill health data with \(.applicationName)"
+                "Full sync health data with \(.applicationName)"
             ],
             shortTitle: "Full Sync Health Data",
             systemImageName: "arrow.triangle.2.circlepath.circle.fill"

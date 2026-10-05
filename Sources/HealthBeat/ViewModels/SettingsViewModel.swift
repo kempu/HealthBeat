@@ -6,6 +6,9 @@ import UIKit
 extension Notification.Name {
     static let healthBeatDatabaseDidReset = Notification.Name("com.healthbeat.databaseDidReset")
     static let healthBeatSyncReminderTapped = Notification.Name("healthBeatSyncReminderTapped")
+    /// Posted from EA settings to drop the local EA baseline so the next Full
+    /// Sync re-exports everything to EA (which truncates + replaces its tables).
+    static let healthBeatEAResetRequested = Notification.Name("com.healthbeat.eaResetRequested")
 }
 
 enum ConnectionTestState: Equatable {

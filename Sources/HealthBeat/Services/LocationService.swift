@@ -88,36 +88,40 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         pendingLocations = []
 
         let config = MySQLConfig.load()
-        let mysql = MySQLService()
+        let mysqlEnabled = config.enabled
         let eaWriter: EABackendWriter? = {
             let eaConfig = EAConfig.load()
             return eaConfig.isConfigured ? EABackendWriter(config: eaConfig) : nil
         }()
+        guard mysqlEnabled || eaWriter != nil else { return }   // no destination enabled
+        let mysql = MySQLService()
         do {
-            try await mysql.connect(config: config)
+            if mysqlEnabled { try await mysql.connect(config: config) }
             defer { Task { await mysql.disconnect() } }
 
             let batchSize = 500
             var offset = 0
             while offset < toFlush.count {
                 let batch = Array(toFlush[offset..<min(offset + batchSize, toFlush.count)])
-                let values = batch.map { loc -> String in
-                    let lat  = loc.coordinate.latitude
-                    let lon  = loc.coordinate.longitude
-                    let alt  = loc.altitude
-                    let hacc = loc.horizontalAccuracy
-                    let vacc = loc.verticalAccuracy
-                    let spd  = loc.speed
-                    let crs  = loc.course
-                    let ts   = MySQLEscape.quote(sqlDate(loc.timestamp))
-                    return "(\(lat),\(lon),\(alt),\(hacc),\(vacc),\(spd),\(crs),\(ts))"
-                }.joined(separator: ",")
-                let sql = """
-                INSERT INTO location_tracks \
-                (latitude,longitude,altitude,horizontal_accuracy,vertical_accuracy,speed,course,timestamp) \
-                VALUES \(values)
-                """
-                try await mysql.execute(sql)
+                if mysqlEnabled {
+                    let values = batch.map { loc -> String in
+                        let lat  = loc.coordinate.latitude
+                        let lon  = loc.coordinate.longitude
+                        let alt  = loc.altitude
+                        let hacc = loc.horizontalAccuracy
+                        let vacc = loc.verticalAccuracy
+                        let spd  = loc.speed
+                        let crs  = loc.course
+                        let ts   = MySQLEscape.quote(sqlDate(loc.timestamp))
+                        return "(\(lat),\(lon),\(alt),\(hacc),\(vacc),\(spd),\(crs),\(ts))"
+                    }.joined(separator: ",")
+                    let sql = """
+                    INSERT INTO location_tracks \
+                    (latitude,longitude,altitude,horizontal_accuracy,vertical_accuracy,speed,course,timestamp) \
+                    VALUES \(values)
+                    """
+                    try await mysql.execute(sql)
+                }
 
                 // EA mirror — independent try/catch so an EA outage doesn't
                 // cause MySQL re-queueing (which would duplicate the rows
@@ -205,24 +209,26 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         let eventTimestamp = location?.timestamp ?? Date()
 
         let config = MySQLConfig.load()
-        let mysql = MySQLService()
-        do {
-            try await mysql.connect(config: config)
-            defer { Task { await mysql.disconnect() } }
+        if config.enabled {
+            let mysql = MySQLService()
+            do {
+                try await mysql.connect(config: config)
+                defer { Task { await mysql.disconnect() } }
 
-            let name    = MySQLEscape.quote(placeName)
-            let pType   = placeType.map { MySQLEscape.quote($0) } ?? "NULL"
-            let evType  = MySQLEscape.quote(eventType)
-            let ts      = MySQLEscape.quote(sqlDate(eventTimestamp))
-            let lat     = location.map { "\($0.coordinate.latitude)" } ?? "NULL"
-            let lon     = location.map { "\($0.coordinate.longitude)" } ?? "NULL"
-            let sql  = """
-            INSERT INTO location_geofence_events (place_name,place_type,event_type,latitude,longitude,timestamp) \
-            VALUES (\(name),\(pType),\(evType),\(lat),\(lon),\(ts))
-            """
-            try await mysql.execute(sql)
-        } catch {
-            // Silent — background context, nothing to surface to user
+                let name    = MySQLEscape.quote(placeName)
+                let pType   = placeType.map { MySQLEscape.quote($0) } ?? "NULL"
+                let evType  = MySQLEscape.quote(eventType)
+                let ts      = MySQLEscape.quote(sqlDate(eventTimestamp))
+                let lat     = location.map { "\($0.coordinate.latitude)" } ?? "NULL"
+                let lon     = location.map { "\($0.coordinate.longitude)" } ?? "NULL"
+                let sql  = """
+                INSERT INTO location_geofence_events (place_name,place_type,event_type,latitude,longitude,timestamp) \
+                VALUES (\(name),\(pType),\(evType),\(lat),\(lon),\(ts))
+                """
+                try await mysql.execute(sql)
+            } catch {
+                // Silent — background context, nothing to surface to user
+            }
         }
 
         // EA mirror — separate path so an EA outage doesn't block the

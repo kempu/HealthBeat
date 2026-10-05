@@ -31,11 +31,16 @@ struct SyncLiveActivityWidget: Widget {
                         .foregroundStyle(.secondary)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Text(context.state.operation)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(context.state.operation)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        ProgressView(value: max(0, min(1, context.state.progress)))
+                            .progressViewStyle(.linear)
+                            .tint(.red)
+                    }
                 }
             } compactLeading: {
                 Image("HeartRate")
@@ -88,7 +93,7 @@ private struct SyncLockScreenView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                ProgressView()
+                ProgressView(value: max(0, min(1, context.state.progress)))
                     .progressViewStyle(.linear)
                     .tint(.red)
             }

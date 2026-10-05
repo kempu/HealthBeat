@@ -38,8 +38,8 @@ struct CategoryStatusCard: View {
                     }
                 }
                 if case .syncing = state.status {
-                    if state.currentProgress > 0 {
-                        Text("Window \(state.currentProgress)/\(state.totalEstimated)")
+                    if state.currentProgress > 0 && state.totalEstimated > 1 {
+                        Text("\(state.currentProgress)/\(state.totalEstimated)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
@@ -116,6 +116,7 @@ struct CategoryStatusCard: View {
         switch state.status {
         case .idle:       return .secondary
         case .syncing:    return .blue
+        case .exported:   return .orange
         case .completed:  return .green
         case .failed:     return .red
         }
@@ -125,6 +126,7 @@ struct CategoryStatusCard: View {
         switch state.status {
         case .failed:    return .red
         case .syncing:   return .blue
+        case .exported:  return .orange
         case .completed: return .green
         default:         return state.daysBehind != nil ? .orange : .blue
         }

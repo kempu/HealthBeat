@@ -11,6 +11,7 @@ final class SyncViewModel: ObservableObject {
     private let syncService: SyncService
     private var cancellables = Set<AnyCancellable>()
     private var syncTask: Task<Void, Never>?
+    private var eaImportPollTask: Task<Void, Never>?
 
     @Published var prerequisiteIssues: [SyncPrerequisiteIssue] = []
     @Published var showPrerequisiteAlert = false
@@ -27,10 +28,21 @@ final class SyncViewModel: ObservableObject {
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
-        // Reset local state when the database is wiped from Settings.
+        // MySQL database wiped from Settings → clear ONLY the MySQL baseline so
+        // the dashboard prompts a MySQL full sync; EA keeps syncing incrementally.
         NotificationCenter.default.publisher(for: .healthBeatDatabaseDidReset)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.syncState.resetAllLocalState() }
+            .sink { [weak self] _ in self?.syncState.handleMySQLReset() }
+            .store(in: &cancellables)
+
+        // "Re-sync EA from scratch" from EA settings → drop the EA baseline; the
+        // dashboard then prompts an EA full sync (which truncates + replaces EA).
+        NotificationCenter.default.publisher(for: .healthBeatEAResetRequested)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.syncState.clearEABaseline()
+                self?.syncState.persist()
+            }
             .store(in: &cancellables)
 
         // Reload persisted sync state when the app returns to the foreground so
@@ -42,9 +54,197 @@ final class SyncViewModel: ObservableObject {
             .sink { [weak self] _ in
                 guard let self else { return }
                 guard !self.syncState.isAnySyncRunning else { return }
+                // A full sync mid-delivery (EA still uploading in the background)
+                // keeps accurate in-memory state — restoring/cleaning over it would
+                // wipe the live progress to 0%. Just refresh the EA upload progress
+                // from the uploader's (background-updated) counter instead.
+                if self.syncState.fullSyncPhase != .idle {
+                    self.refreshEAUploadProgress()
+                    return
+                }
                 self.syncState.restore()
+                self.cleanForFullSyncIfNeeded()
             }
             .store(in: &cancellables)
+
+        // EA dump-upload progress (background) feeds the full-sync deliver bar.
+        NotificationCenter.default.publisher(for: .eaDumpUploadProgress)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] note in
+                guard let self, self.syncState.fullSyncPhase == .delivering,
+                      let frac = note.userInfo?["fraction"] as? Double else { return }
+                self.syncState.updateFullSyncProgress(ea: frac)
+            }
+            .store(in: &cancellables)
+
+        // EA files + key delivered → the server now decrypts and imports them in
+        // async jobs. EA is NOT baselined yet; poll `bulkImportStatus` until those
+        // jobs report `completed` (then mark the baseline) or `failed`.
+        NotificationCenter.default.publisher(for: .eaDumpUploadKeyDelivered)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] note in
+                guard let self else { return }
+                let runID = (note.object as? String)
+                    ?? UserDefaults.standard.string(forKey: "pendingEAImportRunID")
+                if let runID { self.startEAImportPolling(runID: runID) }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .eaDumpUploadFailed)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] note in
+                guard let self else { return }
+                self.syncState.markEAFailed()
+                let detail = (note.userInfo?["reason"] as? String).map { " (\($0))" } ?? ""
+                self.syncState.errorMessage =
+                    "EA upload failed\(detail). Make sure the bulk-import endpoint is deployed and the dump size is within EA's upload limit, then tap Retry."
+            }
+            .store(in: &cancellables)
+
+        // If an EA import was left in progress (key delivered, app then closed),
+        // resume polling its server-side status on launch.
+        if let importRun = UserDefaults.standard.string(forKey: "pendingEAImportRunID") {
+            startEAImportPolling(runID: importRun)
+        }
+
+        // If there's no baseline yet, show a clean slate on launch.
+        cleanForFullSyncIfNeeded()
+    }
+
+    var fullSyncPhase: FullSyncPhase { syncState.fullSyncPhase }
+    var fullSyncSteps: [(label: String, status: SyncStepStatus)] { syncState.fullSyncStepStates }
+    var eaUploadFailed: Bool { syncState.fsEAFailed }
+    /// Files uploaded; EA's server-side import jobs still running (being polled).
+    var eaImporting: Bool { syncState.eaImporting }
+    var eaImportRowsImported: Int { syncState.eaImportRowsImported }
+    var eaImportRowsExpected: Int { syncState.eaImportRowsExpected }
+    /// 0…1 import progress when the expected total is known, else 0.
+    var eaImportFraction: Double {
+        let expected = syncState.eaImportRowsExpected
+        guard expected > 0 else { return 0 }
+        return min(1, Double(syncState.eaImportRowsImported) / Double(expected))
+    }
+
+    /// Re-runs the EA upload for the pending run (the encrypted dump is kept
+    /// until both backends confirm, so retry re-uploads without re-exporting).
+    func retryEAUpload() {
+        guard let runID = UserDefaults.standard.string(forKey: "pendingEAUploadRunID") else {
+            syncState.errorMessage = "Nothing to retry — run a full sync first."
+            return
+        }
+        syncState.fsEAFailed = false
+        syncState.errorMessage = nil
+        if syncState.fullSyncPhase == .idle { syncState.fullSyncPhase = .delivering }
+        syncState.currentOperation = "Retrying EA upload…"
+        // Stash the live-activity weighting so the background uploader can drive
+        // the live activity across EA's slice (base = progress now, span = EA weight),
+        // mirroring runFullSync. base already includes any completed MySQL slice.
+        UserDefaults.standard.set(syncState.overallProgress, forKey: "eaUpload.liveBase.\(runID)")
+        UserDefaults.standard.set(syncState.fullSyncEAWeight, forKey: "eaUpload.liveSpan.\(runID)")
+        do { try EADumpUploader.shared.start(runID: runID) }
+        catch { syncState.errorMessage = error.localizedDescription }
+    }
+
+    /// When no destination has a baseline yet and nothing is running, present a
+    /// clean slate — reset every category card + the on-screen total — so it's
+    /// obvious all data must be synced. The "needs full sync" banner still tells
+    /// the user a full sync is required. If either destination is baselined, the
+    /// cards reflect real data and must not be wiped.
+    func cleanForFullSyncIfNeeded() {
+        // Not while a full sync is in flight (fullSyncPhase != .idle) — its EA
+        // delivery may still be uploading; resetting would wipe live progress.
+        guard !syncState.mysqlBaselineDone, !syncState.eaBaselineDone,
+              !syncState.isAnySyncRunning, syncState.fullSyncPhase == .idle else { return }
+        syncState.resetForFullSync()
+        syncState.persist()
+    }
+
+    /// On returning to the foreground mid-delivery, reconcile the EA phase from
+    /// background-updated state (the foreground notifications may have been missed
+    /// while suspended): resume import-status polling if the key was already
+    /// delivered, else sync the upload bar from the uploader's counters.
+    private func refreshEAUploadProgress() {
+        // Key already delivered → server is importing; (re)attach the poller.
+        if let importRun = UserDefaults.standard.string(forKey: "pendingEAImportRunID") {
+            startEAImportPolling(runID: importRun)
+            return
+        }
+        guard let runID = UserDefaults.standard.string(forKey: "pendingEAUploadRunID") else { return }
+        let total = UserDefaults.standard.integer(forKey: "eaUpload.total.\(runID)")
+        if total > 0, syncState.fullSyncPhase == .delivering {
+            let remaining = UserDefaults.standard.integer(forKey: "eaUpload.remaining.\(runID)")
+            syncState.updateFullSyncProgress(ea: Double(max(0, total - max(0, remaining))) / Double(total))
+        }
+        if UserDefaults.standard.bool(forKey: "eaUpload.failed.\(runID)") {
+            syncState.markEAFailed()
+        }
+    }
+
+    /// Polls the EA server's `bulkImportStatus` after the dump key is delivered,
+    /// until the decrypt-and-import jobs finish. EA's baseline is marked ONLY on
+    /// `completed`; a server-side `failed` surfaces an error and leaves EA needing
+    /// a full sync (its local dump is already wiped, so recovery is a fresh Full
+    /// Sync, not a re-upload). Survives backgrounding — it's restarted from the
+    /// persisted `pendingEAImportRunID` on launch/foreground.
+    func startEAImportPolling(runID: String) {
+        eaImportPollTask?.cancel()
+        UserDefaults.standard.set(runID, forKey: "pendingEAImportRunID")
+        syncState.eaImporting = true
+        if syncState.fullSyncPhase == .idle { syncState.fullSyncPhase = .delivering }
+        syncState.currentOperation = "Uploaded — importing on EA…"
+        eaImportPollTask = Task { [weak self] in
+            await self?.pollEAImport(runID: runID)
+        }
+    }
+
+    private func pollEAImport(runID: String) async {
+        let svc = EAService(config: EAConfig.load())
+        var consecutiveFailures = 0
+        // ~30 min ceiling. We keep polling through transient errors (just backing
+        // off) rather than silently giving up, so a flaky link doesn't strand the
+        // UI on "Importing…" — and we never declare success without a `completed`.
+        for _ in 0..<360 {
+            if Task.isCancelled { return }
+            do {
+                let status = try await svc.bulkImportStatus(runID: runID)
+                consecutiveFailures = 0
+                if let expected = status.rows_expected, expected > 0 {
+                    syncState.eaImportRowsExpected = expected
+                }
+                syncState.eaImportRowsImported = status.rows_imported
+                switch status.status {
+                case "completed":
+                    syncState.markEADone()
+                    syncState.markEABaselineDone()
+                    UserDefaults.standard.removeObject(forKey: "pendingEAImportRunID")
+                    UserDefaults.standard.removeObject(forKey: "pendingEAUploadRunID")
+                    syncState.persist()
+                    syncService.finalizeFullSyncIfComplete()
+                    if syncState.fullSyncPhase != .complete {
+                        syncState.currentOperation = "EA import done — finishing MySQL…"
+                    }
+                    return
+                case "failed":
+                    syncState.eaImporting = false
+                    syncState.endFullSyncProgress()
+                    syncState.errorMessage =
+                        "EA import failed: \(status.error_message ?? "unknown error"). Run Full Sync to try again."
+                    UserDefaults.standard.removeObject(forKey: "pendingEAImportRunID")
+                    syncState.persist()
+                    return
+                default:   // uploading / awaiting_key / processing
+                    syncState.currentOperation = "Importing on EA…"
+                }
+                try? await Task.sleep(nanoseconds: 4_000_000_000)   // 4s while healthy
+            } catch {
+                consecutiveFailures += 1
+                syncState.currentOperation = "Importing on EA — reconnecting…"
+                // Back off on errors (cap ~30s) but keep trying; the import runs
+                // server-side regardless, so we just need to reach the status API.
+                let backoff = min(30, 4 * consecutiveFailures)
+                try? await Task.sleep(nanoseconds: UInt64(backoff) * 1_000_000_000)
+            }
+        }
     }
 
     var categories: [CategorySyncState] { syncState.categories }
@@ -55,7 +255,21 @@ final class SyncViewModel: ObservableObject {
     var overallProgress: Double { syncState.overallProgress }
     var currentOperation: String { syncState.currentOperation }
     var errorMessage: String? { syncState.errorMessage }
-    var hasCompletedFullSync: Bool { syncState.hasCompletedFullSync }
+
+    // Per-destination baseline status, combined with the live enable/config flags.
+    var mysqlNeedsFullSync: Bool { syncState.mysqlNeedsFullSync(enabled: MySQLConfig.load().enabled) }
+    var eaNeedsFullSync: Bool { syncState.eaNeedsFullSync(configured: EAConfig.load().isConfigured) }
+    /// True when any enabled destination still needs a full-sync baseline.
+    var needsFullSync: Bool { mysqlNeedsFullSync || eaNeedsFullSync }
+    /// Human label for the destination(s) a full sync would catch up.
+    var fullSyncTargetsLabel: String {
+        switch (mysqlNeedsFullSync, eaNeedsFullSync) {
+        case (true, true):  return "MySQL and EA"
+        case (true, false): return "MySQL"
+        case (false, true): return "EA"
+        case (false, false): return ""
+        }
+    }
 
     var lastSyncLabel: String {
         guard let date = lastSyncDate else { return "Never synced" }
@@ -72,18 +286,28 @@ final class SyncViewModel: ObservableObject {
         }
     }
 
-    func startFullSync() {
+    /// The one sync button. Runs a full sync when any enabled destination still
+    /// needs a baseline (dump-based export → deliver to just the lagging ones),
+    /// otherwise an incremental sync to all baselined destinations.
+    func startSync() {
         let config = MySQLConfig.load()
-        // Fire off prerequisite validation without blocking the sync
+        let needsFullSync = self.needsFullSync
+        // Re-attach EA so a now-baselined EA receives the incremental pass.
+        syncService.attachEAIfConfigured()
+        // Fire off prerequisite validation without blocking the sync.
         Task {
             let issues = await syncService.validatePrerequisites(config: config)
             self.prerequisiteIssues = issues
-            if !issues.isEmpty {
+            if !issues.isEmpty && needsFullSync {
                 self.showPrerequisiteAlert = true
             }
         }
         let task = Task {
-            await syncService.runFullSync(config: config)
+            if needsFullSync {
+                await syncService.runFullSync(config: config)
+            } else {
+                await syncService.runIncrementalSync(config: config)
+            }
             refreshRecordCounts()
             refreshLatestHealthKitDates()
         }
@@ -94,10 +318,18 @@ final class SyncViewModel: ObservableObject {
     func startReminderSync() {
         guard !isAnySyncRunning else { return }
         isReminderSync = true
-        syncState.currentOperation = "Sync triggered by reminder — keep screen unlocked"
         let config = MySQLConfig.load()
+        let needsFullSync = self.needsFullSync
+        syncService.attachEAIfConfigured()
+        syncState.currentOperation = needsFullSync
+            ? "Sync triggered by reminder — keep screen unlocked for the export"
+            : "Sync triggered by reminder"
         let task = Task {
-            await syncService.runFullSync(config: config)
+            if needsFullSync {
+                await syncService.runFullSync(config: config)
+            } else {
+                await syncService.runIncrementalSync(config: config)
+            }
             refreshRecordCounts()
             refreshLatestHealthKitDates()
             isReminderSync = false
@@ -216,6 +448,10 @@ final class SyncViewModel: ObservableObject {
 
     func refreshRecordCounts() {
         let config = MySQLConfig.load()
+        // Record counts come from MySQL; skip when that destination is off or has
+        // no baseline yet (keep the clean slate — don't repopulate from a stale or
+        // empty DB).
+        guard config.enabled, syncState.mysqlBaselineDone else { return }
         Task {
             do {
                 let mysql = MySQLService()

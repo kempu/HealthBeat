@@ -25,7 +25,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     ) -> Bool {
         UserDefaults.standard.register(defaults: [
             "backgroundSyncEnabled": true,
-            "syncReminderFrequency": "daily"
+            "syncReminderFrequency": "daily",
+            "keepScreenOnDuringSync": true
         ])
         Task { @MainActor in iCloudSyncService.shared.start() }
         registerBackgroundTasks()
@@ -58,7 +59,31 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             }
         }
 
+        // Decoupled full-sync deliver phases: reattach the background upload
+        // session before iOS replays completion events, sweep any orphaned
+        // export dumps (encrypted, but don't leave them around), and finalize
+        // the run once EA confirms the key was delivered.
+        EADumpUploader.shared.reconnect()
+        DumpStore.sweepOrphans(activeRunID: UserDefaults.standard.string(forKey: "pendingDumpDrainRunID"))
+        NotificationCenter.default.addObserver(
+            forName: .eaDumpUploadKeyDelivered, object: nil, queue: .main
+        ) { note in
+            if let runID = note.object as? String { DumpStore.markEAKeyDelivered(runID) }
+        }
+
         return true
+    }
+
+    /// iOS relaunches us here to deliver background `URLSession` completion
+    /// events for the EA dump upload. Hand the uploader the completion handler
+    /// so it can signal when all events are processed.
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        EADumpUploader.shared.backgroundCompletionHandler = completionHandler
+        EADumpUploader.shared.reconnect()
     }
 
     func userNotificationCenter(
@@ -127,7 +152,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         }
 
         let config = MySQLConfig.load()
-        let isFullSyncResume = UserDefaults.standard.bool(forKey: "pendingFullSyncResume")
 
         let syncTask: Task<Void, Never> = Task { @MainActor in
             // If a foreground sync is already running, skip — it will handle persisting
@@ -142,10 +166,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             let service = SyncService(syncState: state)
             service.isBackgroundSync = true
             service.attachEAIfConfigured()
-            if isFullSyncResume {
-                UserDefaults.standard.set(false, forKey: "pendingFullSyncResume")
-                await service.runFullSync(config: config)
+            if let drainRunID = UserDefaults.standard.string(forKey: "pendingDumpDrainRunID") {
+                // Resume the MySQL drain of a local dump. Safe while locked — it
+                // reads a local file + writes MySQL, never HealthKit. (The export
+                // phase that DOES need HealthKit only ever runs in the foreground.)
+                // runDumpDrain handles completion bookkeeping + the live activity.
+                await service.runDumpDrain(runID: drainRunID, config: config)
             } else {
+                // Full sync needs the screen-on HealthKit export, so it never
+                // resumes in the background — only the incremental path does.
                 await service.runIncrementalSync(config: config)
             }
             if let error = state.errorMessage {
