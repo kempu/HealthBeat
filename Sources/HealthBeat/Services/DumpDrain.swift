@@ -79,9 +79,11 @@ extension SyncService {
 
             // Wipe the health tables once per run. Guarded so a resumed drain
             // doesn't re-truncate rows it already loaded in an earlier window.
+            // Merge-only tables (motion activity: iOS keeps 7 days) are never
+            // wiped — their older rows can't be re-exported.
             if !UserDefaults.standard.bool(forKey: wipedKey) {
                 syncState.currentOperation = "Clearing MySQL health tables…"
-                for entry in manifest.tables {
+                for entry in manifest.tables where entry.table.replacedOnDelivery {
                     try await svc.execute("TRUNCATE TABLE `\(entry.table.sqlTable)`")
                 }
                 UserDefaults.standard.set(true, forKey: wipedKey)
@@ -186,13 +188,22 @@ extension SyncService {
             return "INSERT IGNORE INTO health_vision_prescriptions (uuid,start_date,end_date,prescription_type,right_eye_sphere,right_eye_cylinder,right_eye_axis,right_eye_add_power,right_eye_base_curve,right_eye_diameter,left_eye_sphere,left_eye_cylinder,left_eye_axis,left_eye_add_power,left_eye_base_curve,left_eye_diameter,expiration_date,source_name,source_bundle_id,device_name)"
         case .stateOfMind:
             return "INSERT IGNORE INTO health_state_of_mind (uuid,start_date,end_date,kind,valence,valence_classification,labels_json,associations_json,source_name,source_bundle_id,device_name)"
+        case .motionActivities:
+            // Merged, not replaced: upsert so a dumped row closes a still-open one.
+            return "INSERT INTO health_motion_activities (\(SyncService.motionActivityColumns))"
         }
     }
 
-    /// The `ON DUPLICATE KEY UPDATE` tail for the one date-keyed table.
+    /// The `ON DUPLICATE KEY UPDATE` tail for the upserted tables.
     private static func insertSuffix(for table: DumpTable) -> String {
-        guard table == .activitySummaries else { return "" }
-        return " ON DUPLICATE KEY UPDATE active_energy_burned=VALUES(active_energy_burned),active_energy_burned_goal=VALUES(active_energy_burned_goal),exercise_time_minutes=VALUES(exercise_time_minutes),exercise_time_goal_minutes=VALUES(exercise_time_goal_minutes),stand_hours=VALUES(stand_hours),stand_hours_goal=VALUES(stand_hours_goal)"
+        switch table {
+        case .activitySummaries:
+            return " ON DUPLICATE KEY UPDATE active_energy_burned=VALUES(active_energy_burned),active_energy_burned_goal=VALUES(active_energy_burned_goal),exercise_time_minutes=VALUES(exercise_time_minutes),exercise_time_goal_minutes=VALUES(exercise_time_goal_minutes),stand_hours=VALUES(stand_hours),stand_hours_goal=VALUES(stand_hours_goal)"
+        case .motionActivities:
+            return SyncService.motionActivityUpsertSuffix
+        default:
+            return ""
+        }
     }
 
     // MARK: - Row → VALUES tuple (decode then mirror the live SQL exactly)
@@ -236,6 +247,8 @@ extension SyncService {
         case .stateOfMind:
             let r = try decoder.decode(HBStateOfMindRow.self, from: line)
             return "(\(q(r.uuid)),\(q(r.start_date)),\(q(r.end_date)),\(r.kind),\(qd(r.valence)),\(qi(r.valence_classification)),\(q(r.labels_json)),\(q(r.associations_json)),\(q(r.source_name)),\(q(r.source_bundle_id)),\(q(r.device_name)))"
+        case .motionActivities:
+            return SyncService.motionActivityTuple(try decoder.decode(HBMotionActivityRow.self, from: line))
         }
     }
 }

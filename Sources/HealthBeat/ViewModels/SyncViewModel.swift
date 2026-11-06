@@ -491,6 +491,7 @@ final class SyncViewModel: ObservableObject {
                 let activityTotal = counts["health_activity_summaries"] ?? 0
                 let routeTotal = counts["health_workout_routes"] ?? 0
                 let medTotal = counts["health_medications"] ?? 0
+                let motionTotal = counts["health_motion_activities"] ?? 0
 
                 for i in syncState.categories.indices {
                     let id = syncState.categories[i].id
@@ -512,6 +513,8 @@ final class SyncViewModel: ObservableObject {
                         syncState.categories[i].recordCount = routeTotal
                     } else if id == "cat_medications" {
                         syncState.categories[i].recordCount = medTotal
+                    } else if id == "cat_motion" {
+                        syncState.categories[i].recordCount = motionTotal
                     }
                 }
 

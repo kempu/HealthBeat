@@ -35,6 +35,8 @@
 	<string>Health Beat tracks your location in the background to log GPS coordinates and detect when you arrive at or leave your defined places.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Health Beat uses your location to log GPS coordinates and detect place arrivals and departures.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Health Beat reads the motion activity your iPhone records (still, walking, running, cycling, in a vehicle) to sync it to your MySQL database and Executive Assistant.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSSupportsLiveActivitiesFrequentUpdates</key>

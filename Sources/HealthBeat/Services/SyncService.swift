@@ -183,6 +183,7 @@ final class SyncService: ObservableObject {
                 case "cat_medications": return "Medications"
                 case "cat_vision": return "Vision"
                 case "cat_state_of_mind": return "State of Mind"
+                case "cat_motion": return "Motion Activity"
                 default: return id
                 }
             }
@@ -230,6 +231,7 @@ final class SyncService: ObservableObject {
             ("cat_medications", "Medications", "pills.fill"),
             ("cat_vision", "Vision Prescriptions", "eye.fill"),
             ("cat_state_of_mind", "State of Mind", "brain.head.profile"),
+            ("cat_motion", "Motion Activity", "figure.walk.motion"),
         ]
         for (id, name, icon) in specials {
             cats.append(CategorySyncState(
@@ -466,6 +468,7 @@ final class SyncService: ObservableObject {
                 case "cat_medications":        count = try await syncMedications(mysql: mysql, since: nil)
                 case "cat_vision":             count = try await syncVisionPrescriptions(mysql: mysql, since: nil)
                 case "cat_state_of_mind":      count = try await syncStateOfMind(mysql: mysql, since: nil)
+                case "cat_motion":             count = try await syncMotionActivities(mysql: mysql, window: .full)
                 default:                       count = 0
                 }
             }
@@ -591,6 +594,15 @@ final class SyncService: ObservableObject {
             try await exportSpecial("cat_medications", "Medications") { try await self.syncMedications(mysql: nil, since: since, until: until) }
             try await exportSpecial("cat_vision", "Vision Prescriptions") { try await self.syncVisionPrescriptions(mysql: nil, since: since, until: until) }
             try await exportSpecial("cat_state_of_mind", "State of Mind") { try await self.syncStateOfMind(mysql: nil, since: since, until: until) }
+            // Motion activity isn't HealthKit data: missing Motion & Fitness access
+            // must not abort the health export. The card shows why it was skipped.
+            do {
+                try await exportSpecial("cat_motion", "Motion Activity") { try await self.syncMotionActivities(mysql: nil, window: .full, until: until) }
+            } catch let error as MotionActivityError {
+                doneCats += 1
+                syncState.updateCategory("cat_motion", status: .failed(error.localizedDescription), lastSyncDate: until)
+                syncState.updateFullSyncProgress(export: doneCats / totalCats)
+            }
 
             // Close files, gather counts, write the manifest.
             let counts = try await dump.finish()
@@ -930,7 +942,8 @@ final class SyncService: ObservableObject {
             allUnits.append(.categoryTypes)
             for specialID in ["cat_workouts", "cat_bp", "cat_ecg", "cat_audiogram",
                               "cat_activity_summaries", "cat_workout_routes",
-                              "cat_medications", "cat_vision", "cat_state_of_mind"] {
+                              "cat_medications", "cat_vision", "cat_state_of_mind",
+                              "cat_motion"] {
                 allUnits.append(.special(specialID))
             }
 
@@ -1241,6 +1254,13 @@ final class SyncService: ObservableObject {
                 m = try await liveMySQL()
                 count = try await syncStateOfMind(mysql: m, since: querySince)
             }
+        case "cat_motion":
+            // Reads from its own anchor (CoreMotion keeps 7 days), not querySince.
+            do { count = try await syncMotionActivities(mysql: m, window: .live) }
+            catch where SyncService.isConnectionError(error) {
+                m = try await liveMySQL()
+                count = try await syncMotionActivities(mysql: m, window: .live)
+            }
         default:
             count = 0
         }
@@ -1393,7 +1413,8 @@ final class SyncService: ObservableObject {
             // incremental pass.
             for specialID in ["cat_workouts", "cat_bp", "cat_ecg", "cat_audiogram",
                               "cat_activity_summaries", "cat_workout_routes",
-                              "cat_medications", "cat_vision", "cat_state_of_mind"]
+                              "cat_medications", "cat_vision", "cat_state_of_mind",
+                              "cat_motion"]
             where categoryIDs.contains(specialID) {
                 try Task.checkCancellation()
                 do {
@@ -2603,6 +2624,80 @@ final class SyncService: ObservableObject {
         }
 
         return total
+    }
+
+    // MARK: - Motion activity sync (CoreMotion)
+
+    /// Which slice of CoreMotion's 7-day history a pass reads.
+    enum MotionWindow {
+        /// Everything iOS still keeps (full-sync export, per-category re-sync).
+        case full
+        /// From the newest activity already on the live destinations, so its end
+        /// gets filled in; advances that anchor once every destination has the rows.
+        case live
+    }
+
+    /// Column list shared by the live upsert and the dump drain (one source).
+    static let motionActivityColumns =
+        "uuid,activity,is_stationary,is_walking,is_running,is_automotive,is_cycling,is_unknown,confidence,start_date,end_date,duration_seconds,device_name"
+
+    /// Upsert, not INSERT IGNORE: a re-read closes the row that was still open
+    /// (end_date NULL) the last time it was written.
+    static let motionActivityUpsertSuffix =
+        " ON DUPLICATE KEY UPDATE activity=VALUES(activity),is_stationary=VALUES(is_stationary),is_walking=VALUES(is_walking),is_running=VALUES(is_running),is_automotive=VALUES(is_automotive),is_cycling=VALUES(is_cycling),is_unknown=VALUES(is_unknown),confidence=VALUES(confidence),start_date=VALUES(start_date),end_date=VALUES(end_date),duration_seconds=VALUES(duration_seconds),device_name=VALUES(device_name)"
+
+    static func motionActivityTuple(_ r: HBMotionActivityRow) -> String {
+        let q = MySQLEscape.quote
+        let qd = MySQLEscape.quoteDouble
+        return "(\(q(r.uuid)),\(q(r.activity)),\(r.is_stationary),\(r.is_walking),\(r.is_running),\(r.is_automotive),\(r.is_cycling),\(r.is_unknown),\(q(r.confidence)),\(q(r.start_date)),\(q(r.end_date)),\(qd(r.duration_seconds)),\(q(r.device_name)))"
+    }
+
+    /// Reads CoreMotion's activity history and writes it to MySQL (when given)
+    /// and the attached writer (EA, or the dump during export). Throws when
+    /// motion access is missing — the card shows why. Returns rows not written
+    /// before (the re-read open activity isn't counted again).
+    private func syncMotionActivities(mysql: MySQLService?, window: MotionWindow, until: Date? = nil) async throws -> Int {
+        let to = until ?? Date()
+        let anchor = MotionActivityService.liveAnchor
+        // A second before the anchor, so the open activity starting exactly at the
+        // anchor is always part of the answer whatever CoreMotion's bound semantics.
+        let from: Date = {
+            switch window {
+            case .full: return MotionActivityService.earliestQueryable
+            case .live: return max(MotionActivityService.liveQueryStart().addingTimeInterval(-1),
+                                   MotionActivityService.earliestQueryable)
+            }
+        }()
+        let activities = try await MotionActivityService.shared.activities(from: from, to: to)
+        guard !activities.isEmpty else {
+            if window == .live { MotionActivityService.lastLiveSync = Date() }
+            return 0
+        }
+
+        let rows = MotionActivityService.rows(
+            from: activities,
+            deviceID: try MotionActivityService.deviceID(),
+            deviceName: UIDevice.current.name,
+            formatDate: sqlDate
+        )
+        for chunk in rows.chunked(into: batchSize) {
+            try Task.checkCancellation()
+            if let mysql {
+                try await mysql.execute(
+                    "INSERT INTO health_motion_activities (\(Self.motionActivityColumns)) VALUES "
+                    + chunk.map(Self.motionActivityTuple).joined(separator: ",")
+                    + Self.motionActivityUpsertSuffix)
+            }
+            if let eaWriter { try await eaWriter.writeMotionActivities(chunk) }
+        }
+
+        if window == .live, let newest = activities.last?.startDate {
+            MotionActivityService.liveAnchor = newest
+            MotionActivityService.lastLiveSync = Date()
+        }
+        guard let anchor else { return rows.count }
+        let anchorStamp = sqlDate(anchor)
+        return rows.filter { $0.start_date > anchorStamp }.count
     }
 }
 

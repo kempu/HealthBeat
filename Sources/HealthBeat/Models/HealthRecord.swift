@@ -339,6 +339,53 @@ struct StateOfMindRecord: Identifiable {
     }
 }
 
+struct MotionActivityRecord: Identifiable {
+    let id: String
+    let activity: String
+    let confidence: String
+    let startDate: Date
+    /// nil while the activity is still going on (the newest row).
+    let endDate: Date?
+    let durationSeconds: Double?
+    let deviceName: String?
+
+    var activityLabel: String {
+        switch activity {
+        case "stationary": return "Still"
+        case "walking":    return "Walking"
+        case "running":    return "Running"
+        case "cycling":    return "Cycling"
+        case "automotive": return "In a Vehicle"
+        default:           return "Unknown"
+        }
+    }
+
+    var systemImage: String {
+        switch activity {
+        case "stationary": return "figure.stand"
+        case "walking":    return "figure.walk"
+        case "running":    return "figure.run"
+        case "cycling":    return "figure.outdoor.cycle"
+        case "automotive": return "car.fill"
+        default:           return "questionmark.circle"
+        }
+    }
+
+    static func from(row: [String: String], dateFormatter: DateFormatter) -> MotionActivityRecord? {
+        guard let uuid = row["uuid"],
+              let start = row["start_date"].flatMap({ dateFormatter.date(from: $0) }) else { return nil }
+        return MotionActivityRecord(
+            id: uuid,
+            activity: row["activity"] ?? "unknown",
+            confidence: row["confidence"] ?? "low",
+            startDate: start,
+            endDate: row["end_date"].flatMap { dateFormatter.date(from: $0) },
+            durationSeconds: row["duration_seconds"].flatMap(Double.init),
+            deviceName: row["device_name"]
+        )
+    }
+}
+
 struct WorkoutRecord: Identifiable {
     let id: String
     let activityType: String

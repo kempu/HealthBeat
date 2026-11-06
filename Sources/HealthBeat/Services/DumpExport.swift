@@ -9,6 +9,12 @@ import CryptoKit
 /// drain target, and the EA upload endpoint together. The list mirrors what
 /// the full-sync export (`SyncService.exportDump`) produces — the live/bidirectional
 /// paths (geofences, place categories, sync log) are intentionally excluded.
+///
+/// Most tables are a clean replace on delivery (truncate, then load). Tables
+/// whose source keeps only recent history (`replacedOnDelivery == false`) are
+/// merged instead: the dump carries what the device still has, and older rows
+/// already in the destination are kept. EA mirrors the same split
+/// (`HealthBeatController::EXPORT_TABLES` vs `HealthBeatIngestService::MERGE_IMPORT_TABLES`).
 enum DumpTable: String, CaseIterable, Codable, Sendable {
     case quantitySamples
     case categorySamples
@@ -21,6 +27,7 @@ enum DumpTable: String, CaseIterable, Codable, Sendable {
     case medications
     case visionPrescriptions
     case stateOfMind
+    case motionActivities
 
     /// In-tree MySQL table (drain target). Matches `SyncService`'s INSERT names.
     var sqlTable: String {
@@ -36,7 +43,15 @@ enum DumpTable: String, CaseIterable, Codable, Sendable {
         case .medications:        return "health_medications"
         case .visionPrescriptions:return "health_vision_prescriptions"
         case .stateOfMind:        return "health_state_of_mind"
+        case .motionActivities:   return "health_motion_activities"
         }
+    }
+
+    /// False for tables whose source keeps only recent history — CoreMotion
+    /// keeps 7 days, so truncating motion activity on a full sync would erase
+    /// every older row for good. Those are merged (upserted), never wiped.
+    var replacedOnDelivery: Bool {
+        self != .motionActivities
     }
 
     /// EA `hb_*` table name — the `{table}` segment of `/bulk-import/{run}/{table}`.
@@ -112,7 +127,7 @@ actor DumpFileBackendWriter: BackendWriter {
         return counts
     }
 
-    // MARK: BackendWriter — the 11 tables the export covers
+    // MARK: BackendWriter — the 12 tables the export covers
 
     func writeQuantitySamples(_ rows: [HBQuantityRow]) async throws       { try append(rows, to: .quantitySamples) }
     func writeCategorySamples(_ rows: [HBCategoryRow]) async throws       { try append(rows, to: .categorySamples) }
@@ -125,6 +140,7 @@ actor DumpFileBackendWriter: BackendWriter {
     func writeMedications(_ rows: [HBMedicationRow]) async throws         { try append(rows, to: .medications) }
     func writeVisionPrescriptions(_ rows: [HBVisionRow]) async throws     { try append(rows, to: .visionPrescriptions) }
     func writeStateOfMind(_ rows: [HBStateOfMindRow]) async throws        { try append(rows, to: .stateOfMind) }
+    func writeMotionActivities(_ rows: [HBMotionActivityRow]) async throws { try append(rows, to: .motionActivities) }
 
     // MARK: BackendWriter — not part of the historical health dump (no-ops).
     // Location tracks, geofences, place categories and the sync log flow

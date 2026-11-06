@@ -218,7 +218,7 @@ struct SchemaService {
     // MARK: - Schema versioning & migrations
 
     /// Current schema version. Bump this when adding new migrations.
-    static let currentSchemaVersion = 6
+    static let currentSchemaVersion = 7
 
     /// Migrations keyed by target version. Each entry contains ALTER statements
     /// to upgrade from the previous version.
@@ -296,6 +296,30 @@ struct SchemaService {
               INDEX idx_updated_at (updated_at),
               INDEX idx_is_deleted (is_deleted)
             )
+            """,
+        ],
+        7: [
+            // v7: CoreMotion activity history (stationary / walking / running /
+            // cycling / automotive). Not HealthKit data — see MotionActivityService.
+            """
+                CREATE TABLE IF NOT EXISTS health_motion_activities (
+                  uuid              VARCHAR(36) PRIMARY KEY,
+                  activity          VARCHAR(20) NOT NULL,
+                  is_stationary     TINYINT(1) NOT NULL DEFAULT 0,
+                  is_walking        TINYINT(1) NOT NULL DEFAULT 0,
+                  is_running        TINYINT(1) NOT NULL DEFAULT 0,
+                  is_automotive     TINYINT(1) NOT NULL DEFAULT 0,
+                  is_cycling        TINYINT(1) NOT NULL DEFAULT 0,
+                  is_unknown        TINYINT(1) NOT NULL DEFAULT 0,
+                  confidence        VARCHAR(10) NOT NULL,
+                  start_date        DATETIME(3) NOT NULL,
+                  end_date          DATETIME(3),
+                  duration_seconds  DOUBLE,
+                  device_name       VARCHAR(255),
+                  synced_at         DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+                  INDEX idx_start_date (start_date),
+                  INDEX idx_activity_start (activity, start_date)
+                )
             """,
         ],
     ]
@@ -405,6 +429,10 @@ struct SchemaService {
 
     /// Empties every health data table. Schema and migrations are preserved.
     ///
+    /// `health_motion_activities` is left alone, like `location_tracks`: iOS keeps
+    /// only 7 days of motion activity, so the full sync that follows a reset could
+    /// never bring older rows back. (A per-category Reset still deletes it.)
+    ///
     /// Uses `TRUNCATE`, not `DELETE`: a `DELETE FROM` on millions of rows is slow,
     /// acquires per-row locks, and builds a large undo log — which trips
     /// "Lock wait timeout exceeded" (especially if a sync is mid-insert).
@@ -444,6 +472,7 @@ struct SchemaService {
         case "cat_medications":       table = "health_medications"
         case "cat_vision":            table = "health_vision_prescriptions"
         case "cat_state_of_mind":     table = "health_state_of_mind"
+        case "cat_motion":            table = "health_motion_activities"
         default: throw MySQLError.queryError(code: 0, message: "Unknown category: \(categoryID)")
         }
         try await mysql.execute("DELETE FROM \(table)")
@@ -463,6 +492,7 @@ struct SchemaService {
             "health_medications",
             "health_vision_prescriptions",
             "health_state_of_mind",
+            "health_motion_activities",
             "location_tracks",
             "location_geofence_events",
             "place_category_definitions",

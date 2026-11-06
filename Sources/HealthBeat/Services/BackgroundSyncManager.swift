@@ -258,6 +258,14 @@ final class BackgroundSyncManager {
             print("[BackgroundSyncManager] triggerTargetedSync skipped — no matching categories for changed types")
             return
         }
+        // Motion activity (CoreMotion) has no observer to wake the app; it rides
+        // along with HealthKit-triggered syncs, at most every 5 minutes. Only when
+        // readable — a missing permission is reported by the full/incremental
+        // passes on the dashboard, not as a notification on every observer fire.
+        if MotionActivityService.isAuthorized,
+           Date().timeIntervalSince(MotionActivityService.lastLiveSync ?? .distantPast) > 300 {
+            categoryIDs.insert("cat_motion")
+        }
         print("[BackgroundSyncManager] triggerTargetedSync starting for categories: \(categoryIDs.sorted().joined(separator: ", "))")
 
         let config = MySQLConfig.load()

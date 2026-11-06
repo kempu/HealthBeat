@@ -97,7 +97,11 @@ final class DataValidationViewModel: ObservableObject {
         errorMessage = nil
         results = []
         progress = 0
-        progressTotal = syncViewModel.categories.count
+        // Validation compares Apple Health with the database. Motion activity is
+        // CoreMotion data (iOS keeps 7 days, the database keeps all of it), so a
+        // count comparison would always read as out of sync — it's left out.
+        let categories = syncViewModel.categories.filter { $0.id != "cat_motion" }
+        progressTotal = categories.count
         currentScanDetail = ""
         defer {
             isValidating = false
@@ -114,7 +118,7 @@ final class DataValidationViewModel: ObservableObject {
         }
 
         var built: [ValidationResult] = []
-        for catState in syncViewModel.categories {
+        for catState in categories {
             guard !Task.isCancelled else { break }
             currentScanDetail = catState.displayName
 

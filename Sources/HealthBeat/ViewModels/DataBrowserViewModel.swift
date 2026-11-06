@@ -63,6 +63,7 @@ final class DataBrowserViewModel: ObservableObject {
     @Published var workoutRouteRecords: [WorkoutRouteRecord] = []
     @Published var visionPrescriptionRecords: [VisionPrescriptionRecord] = []
     @Published var stateOfMindRecords: [StateOfMindRecord] = []
+    @Published var motionActivityRecords: [MotionActivityRecord] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var page = 0
@@ -116,9 +117,13 @@ final class DataBrowserViewModel: ObservableObject {
         case "workout_routes":           return workoutRouteRecords.count
         case "vision_prescriptions":     return visionPrescriptionRecords.count
         case "state_of_mind":            return stateOfMindRecords.count
+        case "motion_activities":        return motionActivityRecords.count
         default:                         return records.count
         }
     }
+
+    /// True while the last page came back full, so another may exist.
+    var canLoadMore: Bool { totalLoaded > 0 && totalLoaded % pageSize == 0 }
 
     // MARK: - Reset filters
 
@@ -167,7 +172,7 @@ final class DataBrowserViewModel: ObservableObject {
         // Tables without a source_name column (or where filtering by source is not useful):
         let noSourceTypes: Set<String> = [
             "location_tracks", "location_geofence_events",
-            "activity_summaries", "workout_routes",
+            "activity_summaries", "workout_routes", "motion_activities",
         ]
         if noSourceTypes.contains(typeID) {
             availableSources = []
@@ -239,6 +244,7 @@ final class DataBrowserViewModel: ObservableObject {
         workoutRouteRecords = []
         visionPrescriptionRecords = []
         stateOfMindRecords = []
+        motionActivityRecords = []
 
         Task {
             let mysql = MySQLService()
@@ -386,6 +392,17 @@ final class DataBrowserViewModel: ObservableObject {
                         LIMIT \(pageSize) OFFSET \(page * pageSize)
                     """)
                     stateOfMindRecords = rows.compactMap { StateOfMindRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
+                } else if typeID == "motion_activities" {
+                    let filters = dateFilterSQL(prefix: "WHERE")
+                    let rows = try await mysql.query("""
+                        SELECT uuid, activity, confidence, start_date, end_date,
+                               duration_seconds, device_name
+                        FROM health_motion_activities
+                        \(filters.isEmpty ? "" : filters)
+                        ORDER BY start_date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    motionActivityRecords = rows.compactMap { MotionActivityRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
                 } else {
                     // Quantity type
                     let filters = dateFilterSQL()
@@ -558,6 +575,17 @@ final class DataBrowserViewModel: ObservableObject {
                         LIMIT \(pageSize) OFFSET \(page * pageSize)
                     """)
                     stateOfMindRecords += rows.compactMap { StateOfMindRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
+                } else if typeID == "motion_activities" {
+                    let filters = dateFilterSQL(prefix: "WHERE")
+                    let rows = try await mysql.query("""
+                        SELECT uuid, activity, confidence, start_date, end_date,
+                               duration_seconds, device_name
+                        FROM health_motion_activities
+                        \(filters.isEmpty ? "" : filters)
+                        ORDER BY start_date DESC
+                        LIMIT \(pageSize) OFFSET \(page * pageSize)
+                    """)
+                    motionActivityRecords += rows.compactMap { MotionActivityRecord.from(row: $0, dateFormatter: Self.dateFormatter) }
                 } else {
                     let filters = dateFilterSQL()
                     let rows = try await mysql.query("""

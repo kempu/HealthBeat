@@ -7,6 +7,7 @@ struct SettingsView: View {
     @AppStorage("keepScreenOnDuringSync") private var keepScreenOnDuringSync = true
     @AppStorage("backgroundSyncEnabled") private var backgroundSyncEnabled = true
     @AppStorage("syncReminderFrequency") private var syncReminderFrequency = "daily"
+    @State private var motionState = MotionAccessState.current
 
     var body: some View {
         NavigationStack {
@@ -75,6 +76,21 @@ struct SettingsView: View {
                                 Text(locationSubtitle)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    NavigationLink {
+                        MotionSettingsView()
+                    } label: {
+                        HStack(spacing: 12) {
+                            iconBox("figure.walk.motion", color: motionState == .authorized ? .teal : .secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Motion Activity")
+                                    .font(.subheadline.weight(.semibold))
+                                Text(motionState.title)
+                                    .font(.caption)
+                                    .foregroundStyle(motionState == .authorized ? Color.secondary : motionState.color)
                             }
                         }
                     }
@@ -201,7 +217,10 @@ struct SettingsView: View {
                 BrandFooter()
             }
             .navigationTitle("Settings")
-            .onAppear { vm.refreshPermissionsState() }
+            .onAppear {
+                vm.refreshPermissionsState()
+                motionState = MotionAccessState.current
+            }
         }
     }
 

@@ -158,6 +158,29 @@ struct HBStateOfMindRow: Codable, Sendable {
     let device_name: String?
 }
 
+// MARK: - Motion activity (CoreMotion, not HealthKit)
+
+/// One CoreMotion activity. Lasts from `start_date` until the next activity
+/// starts; the newest one is open (`end_date` / `duration_seconds` nil) until a
+/// later pass closes it. `activity` is the single label the row is filed under
+/// (automotive > cycling > running > walking > stationary > unknown); the
+/// `is_*` flags keep every flag CoreMotion set. `confidence`: low|medium|high.
+struct HBMotionActivityRow: Codable, Sendable {
+    let uuid: String
+    let activity: String
+    let is_stationary: Int
+    let is_walking: Int
+    let is_running: Int
+    let is_automotive: Int
+    let is_cycling: Int
+    let is_unknown: Int
+    let confidence: String
+    let start_date: String
+    let end_date: String?
+    let duration_seconds: Double?
+    let device_name: String?
+}
+
 // MARK: - Location
 
 struct HBLocationRow: Codable, Sendable {

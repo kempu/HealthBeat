@@ -1,6 +1,6 @@
 # HealthBeat
 
-iOS app that collects Apple HealthKit data + raw GPS + geofence check-ins and pushes every batch to **two backends in parallel**:
+iOS app that collects Apple HealthKit data + CoreMotion activity (still / walking / running / cycling / in a vehicle) + raw GPS + geofence check-ins and pushes every batch to **two backends in parallel**:
 
 1. **MySQL** — direct TCP write via the in-tree `MySQLService`. The original backend. Schema lives in `Sources/HealthBeat/Services/SchemaService.swift`.
 2. **EA** (`Executive Assistant`) — HTTPS POSTs to `/api/v1/healthbeat/*` on the user's EA server, authenticated with a per-integration sync key. Schema is mirrored as `hb_*` tables in EA's own database.
@@ -28,7 +28,7 @@ For a new table (e.g. you're adding `health_mindfulness_sessions`):
    - Implement in `MultiBackendWriter` (`try await fanout { try await $0.write<…>(rows) }`).
 7. **SyncService fan-out** — at every site that writes the new table to MySQL, build the typed rows in parallel and call `try await eaWriter?.write<…>(rows)` AFTER the `mysql.execute(...)` succeeds. Same pattern as `syncQuantityType` / `syncCategoryType` / etc. Never wrap this in a separate try/catch — let errors propagate so the offending pass is logged as failed and cursors don't advance.
 8. **Reconciliation** — if the new table is UUID-keyed AND its rows can be deleted in Apple Health (so HealthKit may have fewer UUIDs than EA on a re-query), call `reconcileEverywhere(...)` at the end of the sync method exactly like the existing methods do. This is the only path that removes stale rows from EA when HealthKit drops them.
-9. **Dump full-sync coverage** — the full sync (the only way to (re)establish a destination's baseline) ships data through an encrypted local dump. Add the new table to `DumpStore.DumpTable` in `Sources/HealthBeat/Services/DumpExport.swift` (with its `sqlTable` / `eaTable` / `fileName`) so `DumpFileBackendWriter` captures it on export, and add the matching `INSERT` header + row decoder in `Sources/HealthBeat/Services/DumpDrain.swift` so the MySQL drain replays it. **Without this, a user catching up a newly-enabled or reset destination silently misses the table.**
+9. **Dump full-sync coverage** — the full sync (the only way to (re)establish a destination's baseline) ships data through an encrypted local dump. Add the new table to `DumpStore.DumpTable` in `Sources/HealthBeat/Services/DumpExport.swift` (with its `sqlTable` / `eaTable` / `fileName`) so `DumpFileBackendWriter` captures it on export, and add the matching `INSERT` header + row decoder in `Sources/HealthBeat/Services/DumpDrain.swift` so the MySQL drain replays it. **Without this, a user catching up a newly-enabled or reset destination silently misses the table.** If the source keeps only recent history (CoreMotion keeps 7 days), the table must be **merged, never truncated**, on delivery: return `false` from `DumpTable.replacedOnDelivery`, make its drain INSERT an upsert, and add the EA table to `HealthBeatIngestService::MERGE_IMPORT_TABLES` (and keep it out of `HealthBeatController::EXPORT_TABLES`) — otherwise a full sync erases every row older than what the device still holds.
 10. **EA query path** — `web/app/Services/HealthBeat/HealthBeatQueryService.php` if there's a reasonable read query for the new data (overview KPI, list, range query). Surface it from `web/app/Livewire/HealthData.php` and the EA Health Data web/iOS views if it's user-facing.
 11. **Agent skill** — if the data is something users will ask the agent about, add an action to `web/app/Agent/Tools/Ea/HealthBeatTool.php` and update the table map + worked examples in `web/database/seeds/bundled_skills/ea-healthbeat/SKILL.md`.
 
@@ -84,6 +84,7 @@ reconcileEverywhere(table, type, since, until, validUUIDs)
 - `Sources/HealthBeat/Services/EAService.swift` — HTTPS client for the EA ingest API (incl. reconcile + bidirectional pulls)
 - `Sources/HealthBeat/Services/BackendWriter.swift` — `BackendWriter` protocol + `EABackendWriter` + `MultiBackendWriter`
 - `Sources/HealthBeat/Services/SyncService.swift` — orchestrator (HealthKit → MySQL + EA fan-out)
+- `Sources/HealthBeat/Services/MotionActivityService.swift` — CoreMotion activity history (7 days on device) → `HBMotionActivityRow`s; device-scoped deterministic row ids, live-sync anchor, Motion & Fitness permission. Synced as category `cat_motion` (`health_motion_activities` / `hb_motion_activities`), merged on full sync, never wiped by Reset Database
 - `Sources/HealthBeat/Services/LocationService.swift` — CoreLocation → MySQL + EA fan-out (with retry queue for transient EA outages)
 - `Sources/HealthBeat/Services/GeofenceSyncService.swift` — bidirectional sync for geofences + place categories (MySQL ↔ device ↔ EA)
 - `Sources/HealthBeat/Services/DumpExport.swift` — encrypted local dump export (HealthKit → dump files) + `DumpStore` run/coordination state
@@ -94,6 +95,7 @@ reconcileEverywhere(table, type, since, until, validUUIDs)
 - `Sources/HealthBeat/Services/BackgroundSyncManager.swift` — observer-query setup, BGProcessingTask handler
 - `Sources/HealthBeat/Services/iCloudSyncService.swift` — KV-store sync of configs + per-destination baseline state across devices
 - `Sources/HealthBeat/Views/Settings/MySQLSettingsView.swift` — MySQL host/credentials UI + Reset Database (clears the MySQL baseline)
+- `Sources/HealthBeat/Views/Settings/MotionSettingsView.swift` — Motion & Fitness access state + request, the 7-day limit
 - `Sources/HealthBeat/Views/Settings/EASettingsView.swift` — EA URL/sync key UI + connection test + "Re-sync EA from scratch" (clears the EA baseline)
 
 ## Live-sync vs full sync (per-destination baselines)

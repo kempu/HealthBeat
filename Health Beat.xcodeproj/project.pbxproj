@@ -84,6 +84,9 @@
 		AABB00000000000000F1DC04 /* DumpExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000F1DC03 /* DumpExport.swift */; };
 		AABB00000000000000F1DC06 /* DumpDrain.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000F1DC05 /* DumpDrain.swift */; };
 		AABB00000000000000F1DC08 /* DumpUpload.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000F1DC07 /* DumpUpload.swift */; };
+		AABB00000000000000020060 /* MotionActivityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010060 /* MotionActivityService.swift */; };
+		AABB00000000000000020061 /* MotionSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010061 /* MotionSettingsView.swift */; };
+		AABB00000000000000020062 /* MotionActivityDataView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000010062 /* MotionActivityDataView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -191,6 +194,9 @@
 		AABB00000000000000F1DC03 /* DumpExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DumpExport.swift; sourceTree = "<group>"; };
 		AABB00000000000000F1DC05 /* DumpDrain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DumpDrain.swift; sourceTree = "<group>"; };
 		AABB00000000000000F1DC07 /* DumpUpload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DumpUpload.swift; sourceTree = "<group>"; };
+		AABB00000000000000010060 /* MotionActivityService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionActivityService.swift; sourceTree = "<group>"; };
+		AABB00000000000000010061 /* MotionSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionSettingsView.swift; sourceTree = "<group>"; };
+		AABB00000000000000010062 /* MotionActivityDataView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionActivityDataView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -268,6 +274,7 @@
 				AABB00000000000000010008 /* SchemaService.swift */,
 				AABB00000000000000010009 /* HealthKitService.swift */,
 				AABB0000000000000001000A /* SyncService.swift */,
+				AABB00000000000000010060 /* MotionActivityService.swift */,
 				AABB00000000000000010029 /* LocationService.swift */,
 				AABB00000000000000010030 /* BackupManager.swift */,
 				AABB00000000000000010035 /* BackgroundSyncManager.swift */,
@@ -332,6 +339,7 @@
 				AABB00000000000000010043 /* AudiogramDataView.swift */,
 				AABB00000000000000010044 /* ActivitySummaryDataView.swift */,
 				AABB00000000000000010045 /* WorkoutRouteDataView.swift */,
+				AABB00000000000000010062 /* MotionActivityDataView.swift */,
 				AABB00000000000000010046 /* VisionPrescriptionDataView.swift */,
 				AABB00000000000000010047 /* StateOfMindDataView.swift */,
 			);
@@ -345,6 +353,7 @@
 				AABB00000000000000010016 /* MySQLSettingsView.swift */,
 				AABB00000000000000010017 /* HealthPermissionsView.swift */,
 				AABB0000000000000001002B /* LocationSettingsView.swift */,
+				AABB00000000000000010061 /* MotionSettingsView.swift */,
 				AABB0000000000000001002C /* GeoFenceEditView.swift */,
 				AABB0000000000000001002F /* PlaceCategoriesView.swift */,
 				AABB00000000000000010032 /* BackupSettingsView.swift */,
@@ -519,6 +528,9 @@
 				AABB00000000000000020008 /* SchemaService.swift in Sources */,
 				AABB00000000000000020009 /* HealthKitService.swift in Sources */,
 				AABB0000000000000002000A /* SyncService.swift in Sources */,
+				AABB00000000000000020062 /* MotionActivityDataView.swift in Sources */,
+				AABB00000000000000020061 /* MotionSettingsView.swift in Sources */,
+				AABB00000000000000020060 /* MotionActivityService.swift in Sources */,
 				AABB0000000000000002000B /* SyncViewModel.swift in Sources */,
 				AABB0000000000000002000C /* SettingsViewModel.swift in Sources */,
 				AABB0000000000000002000D /* DataBrowserViewModel.swift in Sources */,

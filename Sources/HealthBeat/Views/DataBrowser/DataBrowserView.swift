@@ -56,6 +56,7 @@ struct DataBrowserView: View {
         .init(typeID: "workout_routes",       title: "Workout Routes",        icon: "map.fill",                           sectionTitle: "Workout Routes"),
         .init(typeID: "vision_prescriptions", title: "Vision Prescriptions",  icon: "eyeglasses",                         sectionTitle: "Vision Prescriptions"),
         .init(typeID: "state_of_mind",        title: "State of Mind",         icon: "brain.head.profile",                 sectionTitle: "State of Mind"),
+        .init(typeID: "motion_activities",    title: "Motion Activity",       icon: "figure.walk.motion",                 sectionTitle: "Motion Activity"),
     ]
 
     var body: some View {
@@ -193,6 +194,7 @@ struct DataBrowserView: View {
         case "workout_routes":       WorkoutRouteDataView(vm: vm, config: config)
         case "vision_prescriptions": VisionPrescriptionDataView(vm: vm, config: config)
         case "state_of_mind":        StateOfMindDataView(vm: vm, config: config)
+        case "motion_activities":    MotionActivityDataView(vm: vm, config: config)
         default:                     EmptyView()
         }
     }

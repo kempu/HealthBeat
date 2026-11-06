@@ -33,6 +33,7 @@ protocol BackendWriter: Sendable {
     func writeMedications(_ rows: [HBMedicationRow]) async throws
     func writeVisionPrescriptions(_ rows: [HBVisionRow]) async throws
     func writeStateOfMind(_ rows: [HBStateOfMindRow]) async throws
+    func writeMotionActivities(_ rows: [HBMotionActivityRow]) async throws
     func writeLocationTracks(_ rows: [HBLocationRow]) async throws
     func writeGeofenceEvent(_ row: HBGeofenceEventRow) async throws
     func writeGeofenceDefinitions(_ rows: [HBGeofenceDefinitionRow]) async throws
@@ -108,6 +109,10 @@ struct EABackendWriter: BackendWriter {
         guard !rows.isEmpty else { return }
         try await service.postRecords(endpoint: "/api/v1/healthbeat/state-of-mind", records: rows)
     }
+    func writeMotionActivities(_ rows: [HBMotionActivityRow]) async throws {
+        guard !rows.isEmpty else { return }
+        try await service.postRecords(endpoint: "/api/v1/healthbeat/motion-activities", records: rows)
+    }
     func writeLocationTracks(_ rows: [HBLocationRow]) async throws {
         guard !rows.isEmpty else { return }
         try await service.postRecords(endpoint: "/api/v1/healthbeat/location-tracks", records: rows)
@@ -175,6 +180,7 @@ struct MultiBackendWriter: BackendWriter {
     func writeMedications(_ rows: [HBMedicationRow]) async throws          { try await fanout { try await $0.writeMedications(rows) } }
     func writeVisionPrescriptions(_ rows: [HBVisionRow]) async throws      { try await fanout { try await $0.writeVisionPrescriptions(rows) } }
     func writeStateOfMind(_ rows: [HBStateOfMindRow]) async throws         { try await fanout { try await $0.writeStateOfMind(rows) } }
+    func writeMotionActivities(_ rows: [HBMotionActivityRow]) async throws { try await fanout { try await $0.writeMotionActivities(rows) } }
     func writeLocationTracks(_ rows: [HBLocationRow]) async throws         { try await fanout { try await $0.writeLocationTracks(rows) } }
     func writeGeofenceEvent(_ row: HBGeofenceEventRow) async throws        { try await fanout { try await $0.writeGeofenceEvent(row) } }
     func writeGeofenceDefinitions(_ rows: [HBGeofenceDefinitionRow]) async throws { try await fanout { try await $0.writeGeofenceDefinitions(rows) } }
