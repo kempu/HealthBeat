@@ -198,6 +198,93 @@ final class HealthKitService {
         }
     }
 
+    /// One blood-pressure reading, whichever way its source stored it in HealthKit.
+    struct BloodPressureReading {
+        /// The correlation's UUID, or — for a standalone pair — the systolic sample's UUID.
+        let uuid: UUID
+        let systolic: Double    // mmHg
+        let diastolic: Double   // mmHg
+        let startDate: Date
+        let sourceName: String
+        let deviceName: String?
+        /// Set only for a reading built from standalone samples: the UUIDs it was paired from.
+        let pairedFrom: (systolic: UUID, diastolic: UUID)?
+    }
+
+    /// Every blood-pressure reading whose start lies in [startDate, endDate]: the
+    /// `bloodPressure` correlations, plus systolic/diastolic samples a source saved
+    /// WITHOUT a correlation (some cuffless wearables do), paired by source + start +
+    /// end. Correlation members are excluded from the standalone set so a reading is
+    /// never counted twice. `unpaired` counts standalone samples with no partner.
+    func fetchBloodPressureReadings(
+        from startDate: Date? = nil, until endDate: Date? = nil
+    ) async throws -> (readings: [BloodPressureReading], unpaired: Int) {
+        let systolicType = HKQuantityType(.bloodPressureSystolic)
+        let diastolicType = HKQuantityType(.bloodPressureDiastolic)
+        let mmHg = HKUnit.millimeterOfMercury()
+
+        var readings: [BloodPressureReading] = []
+        for corr in try await fetchBloodPressure(from: startDate, until: endDate) {
+            guard
+                let sys = (corr.objects(for: systolicType) as? Set<HKQuantitySample>)?.first,
+                let dia = (corr.objects(for: diastolicType) as? Set<HKQuantitySample>)?.first
+            else { continue }
+            readings.append(BloodPressureReading(
+                uuid: corr.uuid,
+                systolic: sys.quantity.doubleValue(for: mmHg),
+                diastolic: dia.quantity.doubleValue(for: mmHg),
+                startDate: corr.startDate,
+                sourceName: corr.sourceRevision.source.name,
+                deviceName: corr.device?.name,
+                pairedFrom: nil
+            ))
+        }
+
+        // Members of correlations in a day-widened window, so a member whose own start
+        // differs slightly from its correlation's is still recognised as one.
+        let dayPad: TimeInterval = 86_400
+        var memberUUIDs = Set<UUID>()
+        for corr in try await fetchBloodPressure(
+            from: startDate?.addingTimeInterval(-dayPad), until: endDate?.addingTimeInterval(dayPad)
+        ) {
+            for obj in corr.objects { memberUUIDs.insert(obj.uuid) }
+        }
+
+        func standalone(_ id: HKQuantityTypeIdentifier) async throws -> [String: [HKQuantitySample]] {
+            var groups: [String: [HKQuantitySample]] = [:]
+            try await streamQuantitySamples(typeID: id, from: startDate, until: endDate) { batch in
+                for s in batch where !memberUUIDs.contains(s.uuid) {
+                    let key = "\(s.sourceBundleID)|\(s.startDate.timeIntervalSince1970)|\(s.endDate.timeIntervalSince1970)"
+                    groups[key, default: []].append(s)
+                }
+            }
+            return groups
+        }
+        let sysGroups = try await standalone(.bloodPressureSystolic)
+        let diaGroups = try await standalone(.bloodPressureDiastolic)
+
+        var unpaired = 0
+        for key in Set(sysGroups.keys).union(diaGroups.keys) {
+            // Deterministic order so a re-run pairs the same samples (stable row UUIDs).
+            let sys = (sysGroups[key] ?? []).sorted { $0.uuid.uuidString < $1.uuid.uuidString }
+            let dia = (diaGroups[key] ?? []).sorted { $0.uuid.uuidString < $1.uuid.uuidString }
+            let n = min(sys.count, dia.count)
+            unpaired += (sys.count - n) + (dia.count - n)
+            for i in 0..<n {
+                readings.append(BloodPressureReading(
+                    uuid: sys[i].uuid,
+                    systolic: sys[i].quantity.doubleValue(for: mmHg),
+                    diastolic: dia[i].quantity.doubleValue(for: mmHg),
+                    startDate: sys[i].startDate,
+                    sourceName: sys[i].sourceDisplayName,
+                    deviceName: sys[i].deviceName,
+                    pairedFrom: (sys[i].uuid, dia[i].uuid)
+                ))
+            }
+        }
+        return (readings, unpaired)
+    }
+
     // MARK: - ECG
 
     func fetchECG(from startDate: Date? = nil, until endDate: Date? = nil) async throws -> [HKElectrocardiogram] {

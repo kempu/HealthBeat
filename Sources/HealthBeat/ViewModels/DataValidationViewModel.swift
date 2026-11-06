@@ -468,7 +468,7 @@ final class DataValidationViewModel: ObservableObject {
             } catch {}
 
         case "cat_bp":
-            let items = (try? await HealthKitService.shared.fetchBloodPressure()) ?? []
+            let items = (try? await HealthKitService.shared.fetchBloodPressureReadings())?.readings ?? []
             for item in items where !dbUUIDs.contains(item.uuid.uuidString) { stats.missing += 1 }
 
         case "cat_ecg":
@@ -577,8 +577,7 @@ final class DataValidationViewModel: ObservableObject {
         case "cat_workouts":
             return await HealthKitService.shared.sampleCount(for: .workoutType())
         case "cat_bp":
-            guard let t = HKObjectType.correlationType(forIdentifier: .bloodPressure) else { return 0 }
-            return await HealthKitService.shared.sampleCount(for: t)
+            return (try? await HealthKitService.shared.fetchBloodPressureReadings())?.readings.count ?? 0
         case "cat_ecg":
             return await HealthKitService.shared.sampleCount(for: .electrocardiogramType())
         case "cat_audiogram":

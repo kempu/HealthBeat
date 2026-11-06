@@ -40,6 +40,8 @@ final class BackgroundSyncManager {
         }
         // Special types
         map[HKObjectType.workoutType().identifier] = "cat_workouts"
+        map[HKQuantityTypeIdentifier.bloodPressureSystolic.rawValue] = "cat_bp"
+        map[HKQuantityTypeIdentifier.bloodPressureDiastolic.rawValue] = "cat_bp"
         map[HKObjectType.electrocardiogramType().identifier] = "cat_ecg"
         map[HKObjectType.audiogramSampleType().identifier] = "cat_audiogram"
         map[HKSeriesType.workoutRoute().identifier] = "cat_workout_routes"
@@ -47,8 +49,22 @@ final class BackgroundSyncManager {
         if #available(iOS 18, *) {
             map[HKObjectType.stateOfMindType().identifier] = "cat_state_of_mind"
         }
+        if #available(iOS 26, *) {
+            map[HKObjectType.medicationDoseEventType().identifier] = "cat_medications"
+        }
         return map
     }()
+
+    /// Sample types to observe: every type in `allReadTypes`, plus types whose read
+    /// access is granted per object and so can't be part of the bulk authorization
+    /// request (medication dose events, authorized via the user's medications).
+    private static var observedSampleTypes: [HKSampleType] {
+        var types = HealthDataTypes.allReadTypes.compactMap { $0 as? HKSampleType }
+        if #available(iOS 26, *) {
+            types.append(HKObjectType.medicationDoseEventType())
+        }
+        return types
+    }
 
     // MARK: - Public API
 
@@ -125,11 +141,7 @@ final class BackgroundSyncManager {
     // MARK: - Observer Queries
 
     private func setupObserverQueries() {
-        let readTypes = HealthDataTypes.allReadTypes
-
-        for type in readTypes {
-            guard let sampleType = type as? HKSampleType else { continue }
-
+        for sampleType in Self.observedSampleTypes {
             let query = HKObserverQuery(sampleType: sampleType, predicate: nil) {
                 [weak self] _, completionHandler, error in
                 Task { @MainActor in
@@ -147,11 +159,9 @@ final class BackgroundSyncManager {
     }
 
     private func enableBackgroundDelivery() {
-        let readTypes = HealthDataTypes.allReadTypes
         var count = 0
 
-        for type in readTypes {
-            guard let sampleType = type as? HKSampleType else { continue }
+        for sampleType in Self.observedSampleTypes {
             count += 1
 
             healthStore.enableBackgroundDelivery(for: sampleType, frequency: .immediate) { success, error in

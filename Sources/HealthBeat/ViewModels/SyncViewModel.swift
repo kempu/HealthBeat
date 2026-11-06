@@ -425,8 +425,8 @@ final class SyncViewModel: ObservableObject {
         case "cat_workouts":
             return await HealthKitService.shared.latestSampleDate(for: .workoutType())
         case "cat_bp":
-            guard let t = HKObjectType.correlationType(forIdentifier: .bloodPressure) else { return nil }
-            return await HealthKitService.shared.latestSampleDate(for: t)
+            // Systolic samples cover every reading: correlation members and standalone ones.
+            return await HealthKitService.shared.latestSampleDate(for: HKQuantityType(.bloodPressureSystolic))
         case "cat_ecg":
             return await HealthKitService.shared.latestSampleDate(for: .electrocardiogramType())
         case "cat_audiogram":

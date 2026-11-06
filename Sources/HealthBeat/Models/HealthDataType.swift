@@ -115,9 +115,11 @@ enum HealthDataTypes {
         .init(id: HKQuantityTypeIdentifier.basalBodyTemperature.rawValue, displayName: "Basal Body Temperature", category: .vitals, unit: .degreeCelsius(), unitString: "°C"),
         .init(id: HKQuantityTypeIdentifier.respiratoryRate.rawValue, displayName: "Respiratory Rate", category: .vitals, unit: HKUnit(from: "count/min"), unitString: "breaths/min"),
         // NOTE: bloodPressureSystolic / bloodPressureDiastolic are NOT registered here.
-        // BP samples are persisted to the dedicated `health_blood_pressure` correlation
-        // table via `SyncService.syncBloodPressure(...)`; the Data Browser surfaces them
-        // through the hardcoded "Blood Pressure" Section in DataBrowserView.
+        // BP readings — correlations and standalone systolic/diastolic pairs alike — are
+        // persisted to the dedicated `health_blood_pressure` table via
+        // `SyncService.syncBloodPressure(...)`; their read permission and observers come
+        // from `allReadTypes`. The Data Browser surfaces them through the hardcoded
+        // "Blood Pressure" Section in DataBrowserView.
         .init(id: HKQuantityTypeIdentifier.peripheralPerfusionIndex.rawValue, displayName: "Peripheral Perfusion Index", category: .vitals, unit: .percent(), unitString: "%"),
         .init(id: HKQuantityTypeIdentifier.electrodermalActivity.rawValue, displayName: "Electrodermal Activity", category: .vitals, unit: HKUnit(from: "S"), unitString: "S"),
         // Mobility & Fitness
@@ -356,6 +358,11 @@ enum HealthDataTypes {
         for ct in allCategoryTypes {
             if let t = ct.hkType { types.insert(t) }
         }
+        // Blood pressure: read access is granted per component type (a correlation
+        // type can't be requested). Needed for both the `bloodPressure` correlations
+        // and standalone systolic/diastolic samples; also gives BP its observer queries.
+        types.insert(HKQuantityType(.bloodPressureSystolic))
+        types.insert(HKQuantityType(.bloodPressureDiastolic))
         types.insert(HKObjectType.workoutType())
         types.insert(HKObjectType.electrocardiogramType())
         types.insert(HKObjectType.audiogramSampleType())

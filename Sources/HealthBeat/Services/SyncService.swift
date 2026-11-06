@@ -1192,11 +1192,13 @@ final class SyncService: ObservableObject {
                 count = try await syncWorkouts(mysql: m, since: querySince)
             }
         case "cat_bp":
-            do { count = try await syncBloodPressure(mysql: m, since: querySince) }
+            let bpSince = bloodPressureSince(querySince)
+            do { count = try await syncBloodPressure(mysql: m, since: bpSince) }
             catch where SyncService.isConnectionError(error) {
                 m = try await liveMySQL()
-                count = try await syncBloodPressure(mysql: m, since: querySince)
+                count = try await syncBloodPressure(mysql: m, since: bpSince)
             }
+            noteBloodPressureSynced(since: bpSince)
         case "cat_ecg":
             do { count = try await syncECG(mysql: m, since: querySince) }
             catch where SyncService.isConnectionError(error) {
@@ -1318,6 +1320,20 @@ final class SyncService: ObservableObject {
 
             print("[SyncService] Targeted sync: globalQuerySince=\(globalQuerySince), cursors=\(cursors.count), categories=\(categoryIDs.sorted())")
 
+            // Failures are collected and surfaced (errorMessage → the caller's failure
+            // notification, plus the category card) exactly like runIncrementalSync;
+            // a failed type keeps its cursor so the next pass retries it.
+            var failures: [String] = []
+            func recordFailure(_ label: String, catID: String, _ error: Error) {
+                if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
+                    hkInaccessibleCount += 1
+                    return
+                }
+                print("[SyncService] Targeted sync failed for \(label): \(error)")
+                failures.append("\(label): \(error.localizedDescription)")
+                syncState.updateCategory(catID, status: .failed(error.localizedDescription), lastSyncDate: Date())
+            }
+
             // Sync only the quantity categories that were triggered — per-type cursors
             for (cat, types) in HealthDataTypes.quantityTypesByCategory {
                 let catID = "qty_\(cat.rawValue)"
@@ -1330,26 +1346,20 @@ final class SyncService: ObservableObject {
                     try Task.checkCancellation()
                     let typeQuerySince = querySince(for: typeDesc.id)
                     do {
-                        let count = try await syncQuantityType(typeDesc: typeDesc, mysql: activeMySQL, since: typeQuerySince)
+                        let count: Int
+                        do {
+                            count = try await syncQuantityType(typeDesc: typeDesc, mysql: activeMySQL, since: typeQuerySince)
+                        } catch where SyncService.isConnectionError(error) {
+                            activeMySQL = try await liveMySQL()
+                            count = try await syncQuantityType(typeDesc: typeDesc, mysql: activeMySQL, since: typeQuerySince)
+                        }
                         catDelta += count
                         syncState.incrementalCursors[typeDesc.id] = Date()
                         syncState.persist()
                     } catch is CancellationError {
                         throw CancellationError()
-                    } catch where SyncService.isConnectionError(error) {
-                        do {
-                            activeMySQL = try await liveMySQL()
-                            let count = try await syncQuantityType(typeDesc: typeDesc, mysql: activeMySQL, since: typeQuerySince)
-                            catDelta += count
-                            syncState.incrementalCursors[typeDesc.id] = Date()
-                            syncState.persist()
-                        } catch is CancellationError {
-                            throw CancellationError()
-                        } catch {}
                     } catch {
-                        if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
-                            hkInaccessibleCount += 1
-                        }
+                        recordFailure(typeDesc.displayName, catID: catID, error)
                     }
                 }
                 total += catDelta
@@ -1363,130 +1373,43 @@ final class SyncService: ObservableObject {
                     try Task.checkCancellation()
                     let typeQuerySince = querySince(for: typeDesc.id)
                     do {
-                        total += try await syncCategoryType(typeDesc: typeDesc, mysql: m, since: typeQuerySince)
+                        do {
+                            total += try await syncCategoryType(typeDesc: typeDesc, mysql: m, since: typeQuerySince)
+                        } catch where SyncService.isConnectionError(error) {
+                            m = try await liveMySQL()
+                            total += try await syncCategoryType(typeDesc: typeDesc, mysql: m, since: typeQuerySince)
+                        }
                         syncState.incrementalCursors[typeDesc.id] = Date()
                         syncState.persist()
                     } catch is CancellationError {
                         throw CancellationError()
-                    } catch where SyncService.isConnectionError(error) {
-                        do {
-                            m = try await liveMySQL()
-                            total += try await syncCategoryType(typeDesc: typeDesc, mysql: m, since: typeQuerySince)
-                            syncState.incrementalCursors[typeDesc.id] = Date()
-                            syncState.persist()
-                        } catch is CancellationError {
-                            throw CancellationError()
-                        } catch {}
-                    } catch {}
+                    } catch {
+                        recordFailure(typeDesc.displayName, catID: "cat_category", error)
+                    }
                 }
             }
 
-            if categoryIDs.contains("cat_workouts") {
+            // Special categories — same routing (incl. connection retry) as the
+            // incremental pass.
+            for specialID in ["cat_workouts", "cat_bp", "cat_ecg", "cat_audiogram",
+                              "cat_activity_summaries", "cat_workout_routes",
+                              "cat_medications", "cat_vision", "cat_state_of_mind"]
+            where categoryIDs.contains(specialID) {
                 try Task.checkCancellation()
-                let m = try await liveMySQL()
                 do {
-                    total += try await syncWorkouts(mysql: m, since: querySince(for: "cat_workouts"))
-                    syncState.incrementalCursors["cat_workouts"] = Date()
+                    total += try await syncSpecialCategory(
+                        id: specialID, querySince: querySince(for: specialID), liveMySQL: liveMySQL)
+                    syncState.incrementalCursors[specialID] = Date()
                     syncState.persist()
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    recordFailure(SyncUnit.special(specialID).displayLabel, catID: specialID, error)
                 }
-                catch is CancellationError { throw CancellationError() }
-                catch {}
             }
 
-            if categoryIDs.contains("cat_bp") {
-                try Task.checkCancellation()
-                let m = try await liveMySQL()
-                do {
-                    total += try await syncBloodPressure(mysql: m, since: querySince(for: "cat_bp"))
-                    syncState.incrementalCursors["cat_bp"] = Date()
-                    syncState.persist()
-                }
-                catch is CancellationError { throw CancellationError() }
-                catch {}
-            }
-
-            if categoryIDs.contains("cat_ecg") {
-                try Task.checkCancellation()
-                let m = try await liveMySQL()
-                do {
-                    total += try await syncECG(mysql: m, since: querySince(for: "cat_ecg"))
-                    syncState.incrementalCursors["cat_ecg"] = Date()
-                    syncState.persist()
-                }
-                catch is CancellationError { throw CancellationError() }
-                catch {}
-            }
-
-            if categoryIDs.contains("cat_audiogram") {
-                try Task.checkCancellation()
-                let m = try await liveMySQL()
-                do {
-                    total += try await syncAudiograms(mysql: m, since: querySince(for: "cat_audiogram"))
-                    syncState.incrementalCursors["cat_audiogram"] = Date()
-                    syncState.persist()
-                }
-                catch is CancellationError { throw CancellationError() }
-                catch {}
-            }
-
-            if categoryIDs.contains("cat_activity_summaries") {
-                try Task.checkCancellation()
-                let m = try await liveMySQL()
-                do {
-                    total += try await syncActivitySummaries(mysql: m, since: querySince(for: "cat_activity_summaries"))
-                    syncState.incrementalCursors["cat_activity_summaries"] = Date()
-                    syncState.persist()
-                }
-                catch is CancellationError { throw CancellationError() }
-                catch {}
-            }
-
-            if categoryIDs.contains("cat_workout_routes") {
-                try Task.checkCancellation()
-                let m = try await liveMySQL()
-                do {
-                    total += try await syncWorkoutRoutes(mysql: m, since: querySince(for: "cat_workout_routes"))
-                    syncState.incrementalCursors["cat_workout_routes"] = Date()
-                    syncState.persist()
-                }
-                catch is CancellationError { throw CancellationError() }
-                catch {}
-            }
-
-            if categoryIDs.contains("cat_medications") {
-                try Task.checkCancellation()
-                let m = try await liveMySQL()
-                do {
-                    total += try await syncMedications(mysql: m, since: querySince(for: "cat_medications"))
-                    syncState.incrementalCursors["cat_medications"] = Date()
-                    syncState.persist()
-                }
-                catch is CancellationError { throw CancellationError() }
-                catch {}
-            }
-
-            if categoryIDs.contains("cat_vision") {
-                try Task.checkCancellation()
-                let m = try await liveMySQL()
-                do {
-                    total += try await syncVisionPrescriptions(mysql: m, since: querySince(for: "cat_vision"))
-                    syncState.incrementalCursors["cat_vision"] = Date()
-                    syncState.persist()
-                }
-                catch is CancellationError { throw CancellationError() }
-                catch {}
-            }
-
-            if categoryIDs.contains("cat_state_of_mind") {
-                try Task.checkCancellation()
-                let m = try await liveMySQL()
-                do {
-                    total += try await syncStateOfMind(mysql: m, since: querySince(for: "cat_state_of_mind"))
-                    syncState.incrementalCursors["cat_state_of_mind"] = Date()
-                    syncState.persist()
-                }
-                catch is CancellationError { throw CancellationError() }
-                catch {}
+            if !failures.isEmpty {
+                syncState.errorMessage = "Sync completed with errors in: \(failures.joined(separator: "; "))"
             }
 
             // Two-way place category + geofence definition sync — MySQL-backed.
@@ -2224,47 +2147,63 @@ final class SyncService: ObservableObject {
 
     // MARK: - Blood pressure sync
 
+    /// Blood pressure saved as standalone systolic/diastolic samples (no correlation)
+    /// was never synced before the reading pairing in `fetchBloodPressureReadings`.
+    /// The first live BP sync after that change re-reads the whole BP history once
+    /// (idempotent: INSERT IGNORE / EA upsert by UUID) so those past readings reach
+    /// every baselined destination; afterwards the routine lookback applies again.
+    /// An un-baselined destination gets them from its full-sync dump instead.
+    private static let bpHistoryCatchUpKey = "bpStandaloneHistoryCaughtUp.v1"
+
+    private func bloodPressureSince(_ routine: Date) -> Date? {
+        UserDefaults.standard.bool(forKey: Self.bpHistoryCatchUpKey) ? routine : nil
+    }
+
+    /// Call only after a BP sync pass succeeded; marks the one-time catch-up done.
+    private func noteBloodPressureSynced(since: Date?) {
+        if since == nil { UserDefaults.standard.set(true, forKey: Self.bpHistoryCatchUpKey) }
+    }
+
     private func syncBloodPressure(mysql: MySQLService?, since: Date?, until: Date? = nil) async throws -> Int {
-        let correlations = try await healthKit.fetchBloodPressure(from: since, until: until)
-        guard !correlations.isEmpty else { return 0 }
+        // Correlations AND standalone systolic/diastolic pairs (sources such as
+        // cuffless wearables save BP without a correlation).
+        let (readings, unpaired) = try await healthKit.fetchBloodPressureReadings(from: since, until: until)
+        if unpaired > 0 {
+            print("[SyncService] Blood pressure: \(unpaired) standalone systolic/diastolic samples had no partner and were not synced")
+        }
+        guard !readings.isEmpty else { return 0 }
 
         var total = 0
         var syncedUUIDs: [String] = []
-        let systolicType = HKObjectType.quantityType(forIdentifier: .bloodPressureSystolic)!
-        let diastolicType = HKObjectType.quantityType(forIdentifier: .bloodPressureDiastolic)!
 
-        for batch in correlations.chunked(into: batchSize) {
+        for batch in readings.chunked(into: batchSize) {
             // Build typed BP rows + parallel SQL values list in one pass so
             // the EA fan-out below sees exactly the same rows MySQL did.
-            var bpRows: [HBBloodPressureRow] = []
-            let values: [String] = batch.compactMap { corr -> String? in
-                guard
-                    let sys = (corr.objects(for: systolicType) as? Set<HKQuantitySample>)?.first,
-                    let dia = (corr.objects(for: diastolicType) as? Set<HKQuantitySample>)?.first
-                else { return nil }
-
-                let sysVal = sys.quantity.doubleValue(for: .millimeterOfMercury())
-                let diaVal = dia.quantity.doubleValue(for: .millimeterOfMercury())
-
-                bpRows.append(HBBloodPressureRow(
-                    uuid: corr.uuid.uuidString,
-                    systolic: sysVal,
-                    diastolic: diaVal,
-                    start_date: sqlDate(corr.startDate),
-                    source_name: corr.sourceRevision.source.name,
-                    device_name: corr.device?.name,
-                    metadata: nil
-                ))
-
-                let uuid   = MySQLEscape.quote(corr.uuid.uuidString)
-                let start  = MySQLEscape.quote(sqlDate(corr.startDate))
-                let src    = MySQLEscape.quote(corr.sourceRevision.source.name)
-                let device = MySQLEscape.quote(corr.device?.name)
-                return "(\(uuid),\(sysVal),\(diaVal),\(start),\(src),\(device),NULL)"
+            let bpRows: [HBBloodPressureRow] = batch.map { r in
+                // A reading paired from standalone samples records which two it came from.
+                let meta: String? = r.pairedFrom.map {
+                    #"{"paired_from_samples":{"systolic_uuid":"\#($0.systolic.uuidString)","diastolic_uuid":"\#($0.diastolic.uuidString)"}}"#
+                }
+                return HBBloodPressureRow(
+                    uuid: r.uuid.uuidString,
+                    systolic: r.systolic,
+                    diastolic: r.diastolic,
+                    start_date: sqlDate(r.startDate),
+                    source_name: r.sourceName,
+                    device_name: r.deviceName,
+                    metadata: meta
+                )
+            }
+            let values: [String] = bpRows.map { row in
+                let uuid   = MySQLEscape.quote(row.uuid)
+                let start  = MySQLEscape.quote(row.start_date)
+                let src    = MySQLEscape.quote(row.source_name)
+                let device = MySQLEscape.quote(row.device_name)
+                let meta   = MySQLEscape.quote(row.metadata)
+                return "(\(uuid),\(row.systolic),\(row.diastolic),\(start),\(src),\(device),\(meta))"
             }
 
-            syncedUUIDs.append(contentsOf: batch.map { $0.uuid.uuidString })
-            if values.isEmpty { continue }
+            syncedUUIDs.append(contentsOf: bpRows.map(\.uuid))
             let sql = """
             INSERT IGNORE INTO health_blood_pressure
               (uuid,systolic,diastolic,start_date,source_name,device_name,metadata)
