@@ -24,6 +24,15 @@ enum MotionAccessState: Equatable {
 
     enum Action { case requestAccess, openSettings }
 
+    /// Whether the Sync dashboard lists this state under Action Required:
+    /// every state in which motion activity can't sync on a device that has it.
+    var needsAttention: Bool {
+        switch self {
+        case .notDetermined, .denied, .restricted: return true
+        case .authorized, .unavailable: return false
+        }
+    }
+
     /// The action that would change something in this state; nil when none can.
     var action: Action? {
         switch self {

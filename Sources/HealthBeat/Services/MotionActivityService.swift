@@ -230,13 +230,22 @@ enum MotionActivityError: LocalizedError {
         case .notAvailable:
             return "This device doesn't record motion activity."
         case .notDetermined:
-            return "Motion & Fitness access hasn't been granted yet. Open Settings → Motion Activity and tap Allow."
+            return "Motion & Fitness access hasn't been allowed yet. Tap Allow Motion Access on the Sync screen."
         case .denied:
             return "Motion & Fitness access is off for Health Beat. Turn it on in iOS Settings → Privacy & Security → Motion & Fitness."
         case .restricted:
             return "Motion & Fitness access is restricted on this device (Screen Time or a device profile)."
         case .query(let message):
             return "Reading motion activity failed: \(message)"
+        }
+    }
+
+    /// Access is missing (or the device can't record motion): a setup issue the
+    /// dashboard surfaces with its fix, not a failed sync.
+    var isAccessIssue: Bool {
+        switch self {
+        case .notAvailable, .notDetermined, .denied, .restricted: return true
+        case .query: return false
         }
     }
 

@@ -61,6 +61,32 @@ struct DataBrowserView: View {
 
     var body: some View {
         NavigationStack {
+            Group {
+                if config.isConfigured {
+                    browser
+                } else {
+                    mysqlOffNotice
+                }
+            }
+            .navigationTitle("Data Browser")
+            .onAppear { config = MySQLConfig.load() }
+        }
+    }
+
+    /// Browse reads the MySQL destination only. With MySQL off (or not set up)
+    /// there is nothing current to read, so say where the data is instead of
+    /// querying a database this phone no longer writes to.
+    private var mysqlOffNotice: some View {
+        ContentUnavailableView {
+            Label(config.enabled ? "MySQL Isn't Set Up" : "MySQL Is Off", systemImage: "cylinder.split.1x2")
+        } description: {
+            Text(config.enabled
+                 ? "Browse reads your MySQL database. Add its host and login in Settings → MySQL Connection to browse here."
+                 : "Browse reads your MySQL database, and that destination is turned off on this phone. Your synced data is in Executive Assistant → Health Data. Turn MySQL on in Settings → MySQL Connection to browse here.")
+        }
+    }
+
+    private var browser: some View {
             List {
                 // Workouts
                 if showWorkouts {
@@ -179,9 +205,6 @@ struct DataBrowserView: View {
                 BrandFooter()
             }
             .searchable(text: $searchText, prompt: "Search health data types")
-            .navigationTitle("Data Browser")
-            .onAppear { config = MySQLConfig.load() }
-        }
     }
 
     @ViewBuilder

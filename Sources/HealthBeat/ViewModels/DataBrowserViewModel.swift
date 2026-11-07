@@ -250,6 +250,10 @@ final class DataBrowserViewModel: ObservableObject {
             let mysql = MySQLService()
             do {
                 try await mysql.connect(config: config)
+                // Create any table a newer app version added (once per session),
+                // so a destination that hasn't synced since doesn't read as broken.
+                let (ok, schemaErr) = await SchemaService.initializeSchema(mysql: mysql)
+                if !ok { throw MySQLError.queryError(code: 0, message: schemaErr ?? "Schema error") }
 
                 if typeID == "workout" {
                     let filters = dateFilterSQL(prefix: "WHERE")

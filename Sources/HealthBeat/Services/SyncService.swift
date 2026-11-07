@@ -377,6 +377,13 @@ final class SyncService: ObservableObject {
             issues.append(.somePermissionsDenied(count: notRequestedTypes.count))
         }
 
+        // Motion & Fitness access (CoreMotion, not HealthKit): its own permission,
+        // so it gets its own Action Required item with the action that fixes it.
+        let motion = MotionAccessState.current
+        if motion.needsAttention {
+            issues.append(.motionAccess(motion))
+        }
+
         // Check database schema — only when the MySQL destination is enabled.
         if config.enabled {
             do {
@@ -386,7 +393,7 @@ final class SyncService: ObservableObject {
                     "health_quantity_samples", "health_category_samples", "health_workouts",
                     "health_blood_pressure", "health_ecg", "health_audiograms",
                     "health_activity_summaries", "health_workout_routes", "health_medications",
-                    "health_vision_prescriptions", "health_state_of_mind",
+                    "health_vision_prescriptions", "health_state_of_mind", "health_motion_activities",
                     "health_sync_log", "location_tracks", "location_geofence_events"
                 ]
                 var missingTables: [String] = []
@@ -1112,6 +1119,10 @@ final class SyncService: ObservableObject {
                     } catch {
                         if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
                             hkInaccessibleCount += 1
+                        } else if let motion = error as? MotionActivityError, motion.isAccessIssue {
+                            // Not a sync failure: the dashboard's Action Required
+                            // item says why and offers the fix. The card says why.
+                            syncState.updateCategory(specialID, status: .failed(motion.localizedDescription), lastSyncDate: Date())
                         } else {
                             failedCategories.append(unit.displayLabel)
                             syncState.updateCategory(specialID, status: .failed(error.localizedDescription), lastSyncDate: Date())
@@ -1347,6 +1358,11 @@ final class SyncService: ObservableObject {
             func recordFailure(_ label: String, catID: String, _ error: Error) {
                 if isBackgroundSync, (error as? HKError)?.code == .errorDatabaseInaccessible {
                     hkInaccessibleCount += 1
+                    return
+                }
+                if let motion = error as? MotionActivityError, motion.isAccessIssue {
+                    // Surfaced (with its fix) as an Action Required item, not a failure.
+                    syncState.updateCategory(catID, status: .failed(motion.localizedDescription), lastSyncDate: Date())
                     return
                 }
                 print("[SyncService] Targeted sync failed for \(label): \(error)")
@@ -2709,6 +2725,7 @@ enum SyncPrerequisiteIssue: Identifiable {
     case somePermissionsDenied(count: Int)
     case missingDatabaseTables(tables: [String])
     case databaseConnectionFailed(String)
+    case motionAccess(MotionAccessState)
 
     var id: String {
         switch self {
@@ -2717,6 +2734,7 @@ enum SyncPrerequisiteIssue: Identifiable {
         case .somePermissionsDenied: return "permissionsDenied"
         case .missingDatabaseTables: return "missingTables"
         case .databaseConnectionFailed: return "dbConnectionFailed"
+        case .motionAccess: return "motionAccess"
         }
     }
 
@@ -2732,6 +2750,8 @@ enum SyncPrerequisiteIssue: Identifiable {
             return "\(tables.count) Database Table(s) Missing"
         case .databaseConnectionFailed:
             return "Database Connection Failed"
+        case .motionAccess(let state):
+            return state == .notDetermined ? "Allow Motion Activity" : "Motion Activity Can't Sync"
         }
     }
 
@@ -2747,6 +2767,8 @@ enum SyncPrerequisiteIssue: Identifiable {
             return "Tables missing: \(tables.joined(separator: ", ")). Go to Settings → MySQL Connection → Initialize Schema to create them."
         case .databaseConnectionFailed(let err):
             return "Could not connect to MySQL: \(err). Check your connection settings."
+        case .motionAccess(let state):
+            return state.detail + " Until then, Motion Activity is left out of every sync."
         }
     }
 
@@ -2757,6 +2779,12 @@ enum SyncPrerequisiteIssue: Identifiable {
         case .somePermissionsDenied: return "Review Permissions"
         case .missingDatabaseTables: return "Initialize Schema"
         case .databaseConnectionFailed: return "Check Settings"
+        case .motionAccess(let state):
+            switch state.action {
+            case .requestAccess: return "Allow Motion Access"
+            case .openSettings:  return "Open iOS Settings"
+            case nil:            return ""
+            }
         }
     }
 }

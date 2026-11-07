@@ -7,6 +7,7 @@ struct SyncDashboardView: View {
     @ObservedObject private var iCloud = iCloudSyncService.shared
     @State private var navigateToHealthPermissions = false
     @State private var showSyncCompletedBanner = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
@@ -173,6 +174,11 @@ struct SyncDashboardView: View {
                 vm.refreshRecordCounts()
                 vm.checkPrerequisites()
                 vm.refreshLatestHealthKitDates()
+            }
+            .onChange(of: scenePhase) { _, phase in
+                // Back from iOS Settings (e.g. Motion & Fitness turned on):
+                // re-check so a fixed issue disappears without a relaunch.
+                if phase == .active { vm.checkPrerequisites() }
             }
             .onDisappear {
                 // Safety net: SyncService owns the idle timer during sync, but make
@@ -463,6 +469,24 @@ struct SyncDashboardView: View {
                     await mysql.disconnect()
                     vm.syncState.errorMessage = "Could not connect to MySQL: \(error.localizedDescription)"
                 }
+            }
+        case .motionAccess(let state):
+            switch state.action {
+            case .requestAccess:
+                Task {
+                    _ = await MotionActivityService.shared.requestAccess()
+                    vm.checkPrerequisites()
+                    // Allowed: bring the last 7 days over right away.
+                    if MotionAccessState.current == .authorized && !vm.isAnySyncRunning {
+                        vm.startCategorySync(categoryID: "cat_motion")
+                    }
+                }
+            case .openSettings:
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            case nil:
+                break
             }
         case .databaseConnectionFailed:
             break
