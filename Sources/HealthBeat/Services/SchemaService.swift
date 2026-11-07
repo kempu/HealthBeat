@@ -208,6 +208,25 @@ struct SchemaService {
       synced_at               DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
       INDEX idx_start_date (start_date)
     );
+
+    CREATE TABLE IF NOT EXISTS health_motion_activities (
+      uuid              VARCHAR(36) PRIMARY KEY,
+      activity          VARCHAR(20) NOT NULL,
+      is_stationary     TINYINT(1) NOT NULL DEFAULT 0,
+      is_walking        TINYINT(1) NOT NULL DEFAULT 0,
+      is_running        TINYINT(1) NOT NULL DEFAULT 0,
+      is_automotive     TINYINT(1) NOT NULL DEFAULT 0,
+      is_cycling        TINYINT(1) NOT NULL DEFAULT 0,
+      is_unknown        TINYINT(1) NOT NULL DEFAULT 0,
+      confidence        VARCHAR(10) NOT NULL,
+      start_date        DATETIME(3) NOT NULL,
+      end_date          DATETIME(3),
+      duration_seconds  DOUBLE,
+      device_name       VARCHAR(255),
+      synced_at         DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      INDEX idx_start_date (start_date),
+      INDEX idx_activity_start (activity, start_date)
+    );
     """
 
     static let tableStatements: [String] = ddl
@@ -298,30 +317,9 @@ struct SchemaService {
             )
             """,
         ],
-        7: [
-            // v7: CoreMotion activity history (stationary / walking / running /
-            // cycling / automotive). Not HealthKit data — see MotionActivityService.
-            """
-                CREATE TABLE IF NOT EXISTS health_motion_activities (
-                  uuid              VARCHAR(36) PRIMARY KEY,
-                  activity          VARCHAR(20) NOT NULL,
-                  is_stationary     TINYINT(1) NOT NULL DEFAULT 0,
-                  is_walking        TINYINT(1) NOT NULL DEFAULT 0,
-                  is_running        TINYINT(1) NOT NULL DEFAULT 0,
-                  is_automotive     TINYINT(1) NOT NULL DEFAULT 0,
-                  is_cycling        TINYINT(1) NOT NULL DEFAULT 0,
-                  is_unknown        TINYINT(1) NOT NULL DEFAULT 0,
-                  confidence        VARCHAR(10) NOT NULL,
-                  start_date        DATETIME(3) NOT NULL,
-                  end_date          DATETIME(3),
-                  duration_seconds  DOUBLE,
-                  device_name       VARCHAR(255),
-                  synced_at         DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-                  INDEX idx_start_date (start_date),
-                  INDEX idx_activity_start (activity, start_date)
-                )
-            """,
-        ],
+        // v7 (CoreMotion activity history) is a new table, so it lives in the
+        // base DDL above, which runs on every schema init: a version-gated
+        // CREATE is skipped on any database whose marker already reads >= 7.
     ]
 
     /// Session-level cache: once schema is initialized, skip DDL + migrations for the rest

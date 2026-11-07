@@ -17,7 +17,7 @@ When this rule is violated, the symptom is silent: the live app keeps working, M
 
 For a new table (e.g. you're adding `health_mindfulness_sessions`):
 
-1. **MySQL schema** — `Services/SchemaService.swift`: add the `CREATE TABLE` + bump `currentSchemaVersion` + add the migration block. Same shape as the existing tables (UUID primary key, `start_date` / `end_date`, datetime UTC, JSON metadata, `synced_at`).
+1. **MySQL schema** — `Services/SchemaService.swift`: add the `CREATE TABLE IF NOT EXISTS` to the base `ddl` (it runs on every schema init). Never create a new table only inside a version-gated migration block — a database whose `schema_migrations` marker is already at or past that version silently never gets it. Migration blocks are for `ALTER`s on existing tables. Same shape as the existing tables (UUID primary key, `start_date` / `end_date`, datetime UTC, JSON metadata, `synced_at`).
 2. **EA schema** — add a `hb_<table>` migration on the EA side at `web/database/migrations/YYYY_MM_DD_NNNNNN_<name>.php` mirroring the column list one-to-one. EA tables use `Schema::create('hb_…', …)`.
 3. **EA ingest column map** — `web/app/Services/HealthBeat/HealthBeatIngestService.php` `COLUMN_MAP`: add the new table with its allowed column list. Add date/JSON column names to `DATETIME_COLUMNS` / `JSON_COLUMNS` if needed.
 4. **EA route + controller method** — `web/routes/api.php` (inside the `v1/healthbeat` group): `Route::post('/<endpoint>', [HealthBeatController::class, 'put<…>']);`. Add the controller method in `web/app/Http/Controllers/Api/V1/HealthBeatController.php` calling `$this->ingest->upsertUuidBatch(...)` (or the right shape for the table).
